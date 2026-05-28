@@ -4,7 +4,7 @@
 
 **Erlang/OTP 数据库迁移库 —— 像素级对标 [golang-migrate/migrate v4](https://github.com/golang-migrate/migrate) 的设计实现。**
 
-> Supported databases / 支持的数据库：**PostgreSQL 18+** · **MySQL 8+** · **SQLite 3+**
+> Supported databases / 支持的数据库：**PostgreSQL 10+** · **MySQL 8+** · **SQLite 3+**
 
 ---
 
@@ -358,7 +358,7 @@ Config = #{
 | `drop` state table | ✅ all tables | ✅ state table only | ⚠️ Partial |
 | Advisory lock | ✅ | ✅ `pg_advisory_lock` | ✅ Done |
 | Dirty state machine | ✅ | ✅ | ✅ Done |
-| Migration history | ❌ single-row | ✅ per-version + `applied_at` | ✅ Extended |
+| Migration history | ❌ single-row | ❌ single-row + `applied_at` | ✅ Done |
 | Lock timeout | ✅ 15s | ✅ `lock_timeout` ms (default 15s) | ✅ Done |
 | GracefulStop | ✅ channel | ❌ | 🔲 Planned |
 | Logger interface | ✅ pluggable | ✅ optional `logger` fun/2 in Config | ✅ Done |
@@ -379,8 +379,8 @@ Add `epgsql` to your own `deps`. `erlang_migrate` has **zero hard dependencies**
 
 ```erlang
 {deps, [
-    {erlang_migrate, "0.1.0"},
-    {epgsql, "4.7.1"}
+    {erlang_migrate, "0.2.1"},
+    {epgsql, "4.8.0"}
 ]}.
 ```
 
@@ -397,7 +397,7 @@ Add `mysql` to your own `deps`, then set `driver => erlang_migrate_mysql` in Con
 
 ```erlang
 {deps, [
-    {erlang_migrate, "0.1.0"},
+    {erlang_migrate, "0.2.1"},
     {mysql, "1.8.0"}           %% add mysql driver yourself / 自行添加驱动依赖
 ]}.
 ```
@@ -417,7 +417,7 @@ Add `esqlite` to your own `deps`, then set `driver => erlang_migrate_sqlite` in 
 
 ```erlang
 {deps, [
-    {erlang_migrate, "0.1.0"},
+    {erlang_migrate, "0.2.1"},
     {esqlite, "0.8.1"}         %% add esqlite driver yourself / 自行添加驱动依赖
 ]}.
 ```
@@ -432,7 +432,7 @@ ok = erlang_migrate:up(Config).
 
 ```erlang
 {deps, [
-    {erlang_migrate, {git, "https://github.com/imboy-pub/erlang_migrate.git", {tag, "v0.1.0"}}}
+    {erlang_migrate, {git, "https://github.com/imboy-pub/erlang_migrate.git", {tag, "v0.2.1"}}}
 ]}.
 ```
 

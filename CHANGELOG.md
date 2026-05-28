@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-05-28
+
+### Fixed
+
+- `exec_sql` (PG): replace broken SAVEPOINT approach with `BEGIN`/`COMMIT`/`ROLLBACK`
+- `set_version` (all drivers): replace non-atomic DELETE+INSERT with upsert (PG: `ON CONFLICT DO UPDATE`, MySQL: `REPLACE INTO`, SQLite: `INSERT OR REPLACE`)
+- `apply_up`/`apply_down`/`version`/`force`: replace `ok = Driver:...` badmatch patterns with `case` expressions for proper `{error, _}` propagation
+- Table name injection: add `validate_table_name/1` whitelist (`^[a-zA-Z_][a-zA-Z0-9_]*$`) in all three drivers
+- `driver/1`: validate driver module is loaded via `code:which/1` before use
+- Remove dead code: `clear_dirty/2` export and function body removed from `erlang_migrate_pg`
+- Fix `current_version/2` edoc: correct return type to `{ok, Version, Dirty}`
+- README: fix PostgreSQL minimum version (`18+` → `10+`), sync install example versions to `0.2.2`, fix epgsql version to `4.8.0`, correct Migration history table description
+
+### Refactored
+
+- Extract `run_one_up/6` and `run_one_down/7` to reduce `apply_up`/`apply_down` nesting from 5 to 1 level
+
 ## [0.2.1] - 2026-05-28
 
 ### Fixed

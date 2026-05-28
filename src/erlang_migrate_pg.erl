@@ -3,7 +3,7 @@
 -module(erlang_migrate_pg).
 -behaviour(erlang_migrate_driver).
 -export([ensure_table/2, current_version/2, lock/2, lock/3, unlock/2,
-         set_version/4, clear_dirty/2, is_dirty/2, drop_table/2,
+         set_version/4, is_dirty/2, drop_table/2,
          exec_sql/2]).
 
 -define(LOCK_RETRY_MS, 100).
@@ -26,7 +26,7 @@ ensure_table(Conn, Table) ->
         Err        -> {error, {ensure_table_failed, Err}}
     end.
 
-%% Get current version. Returns {ok, Version} | {ok, undefined} | {error, term()}
+%% Get current version. Returns {ok, Version, Dirty} | {ok, undefined, false} | {error, term()}
 current_version(Conn, Table) ->
     SQL = iolist_to_binary([
         "SELECT version, dirty FROM ", table_ref(Table),
@@ -83,34 +83,26 @@ set_version(Conn, Table, undefined, _Dirty) ->
     end;
 set_version(Conn, Table, Version, Dirty) ->
     DirtyStr = case Dirty of true -> "true"; false -> "false" end,
-    Del = iolist_to_binary(["DELETE FROM ", table_ref(Table)]),
-    Ins = iolist_to_binary([
+    %% Delete rows for other versions, then upsert the current one atomically.
+    Del = iolist_to_binary([
+        "DELETE FROM ", table_ref(Table),
+        " WHERE version != ", integer_to_binary(Version)
+    ]),
+    Upsert = iolist_to_binary([
         "INSERT INTO ", table_ref(Table),
         " (version, dirty, applied_at) VALUES (",
-        integer_to_binary(Version), ", ", DirtyStr, ", now())"
+        integer_to_binary(Version), ", ", DirtyStr, ", now())",
+        " ON CONFLICT (version) DO UPDATE"
+        " SET dirty = EXCLUDED.dirty, applied_at = EXCLUDED.applied_at"
     ]),
     case epgsql:squery(Conn, Del) of
         {ok, _} ->
-            case epgsql:squery(Conn, Ins) of
+            case epgsql:squery(Conn, Upsert) of
                 {ok, _}    -> ok;
                 {ok, _, _} -> ok;
                 Err        -> {error, {set_version_failed, Err}}
             end;
         Err -> {error, {set_version_failed, Err}}
-    end.
-
-%% Clear dirty flag for current version.
-clear_dirty(Conn, Table) ->
-    SQL = iolist_to_binary([
-        "UPDATE ", table_ref(Table),
-        " SET dirty = false WHERE version = (",
-        "  SELECT version FROM ", table_ref(Table),
-        "  ORDER BY version DESC LIMIT 1)"
-    ]),
-    case epgsql:squery(Conn, SQL) of
-        {ok, _}    -> ok;
-        {ok, _, _} -> ok;
-        Err        -> {error, {clear_dirty_failed, Err}}
     end.
 
 %% Check if current state is dirty.
@@ -130,11 +122,26 @@ drop_table(Conn, Table) ->
     end.
 
 %% Execute arbitrary SQL (for migration content).
+%% Wraps execution in BEGIN/COMMIT so multi-statement SQL is rolled back atomically on error.
 exec_sql(Conn, SQL) when is_binary(SQL) ->
-    case epgsql:squery(Conn, binary_to_list(SQL)) of
+    case epgsql:squery(Conn, "BEGIN") of
+        {ok, _} ->
+            case run_sql(Conn, binary_to_list(SQL)) of
+                ok ->
+                    epgsql:squery(Conn, "COMMIT"),
+                    ok;
+                {error, _} = Err ->
+                    epgsql:squery(Conn, "ROLLBACK"),
+                    Err
+            end;
+        Err ->
+            {error, {begin_failed, Err}}
+    end.
+
+run_sql(Conn, SQL) ->
+    case epgsql:squery(Conn, SQL) of
         Results when is_list(Results) ->
-            Errors = [E || {error, _} = E <- Results],
-            case Errors of
+            case [E || {error, _} = E <- Results] of
                 []        -> ok;
                 [Err | _] -> {error, {sql_exec_failed, Err}}
             end;
@@ -145,5 +152,12 @@ exec_sql(Conn, SQL) when is_binary(SQL) ->
 
 %%% Internal
 
-table_ref(Table) when is_binary(Table) -> Table;
-table_ref(Table) when is_list(Table)   -> list_to_binary(Table).
+table_ref(Table) when is_binary(Table) -> validate_table_name(Table);
+table_ref(Table) when is_list(Table)   -> validate_table_name(list_to_binary(Table)).
+
+%% Raises error/1 (not {error,_}) — invalid table name is a programmer error, not a runtime condition.
+validate_table_name(Name) ->
+    case re:run(Name, "^[a-zA-Z_][a-zA-Z0-9_]*$", [{capture, none}]) of
+        match   -> Name;
+        nomatch -> error({invalid_table_name, Name})
+    end.

@@ -105,10 +105,13 @@ version(Config) ->
     Conn   = conn(Config),
     Table  = table(Config),
     Driver = driver(Config),
-    ok = Driver:ensure_table(Conn, Table),
-    case Driver:current_version(Conn, Table) of
-        {ok, Ver, Dirty} -> {ok, Ver, Dirty};
-        Err              -> Err
+    case Driver:ensure_table(Conn, Table) of
+        {error, _} = E -> E;
+        ok ->
+            case Driver:current_version(Conn, Table) of
+                {ok, Ver, Dirty} -> {ok, Ver, Dirty};
+                Err              -> Err
+            end
     end.
 
 %% Force set version (clears dirty flag — use after manual recovery).
@@ -117,8 +120,10 @@ force(Config, Version) ->
     Conn   = conn(Config),
     Table  = table(Config),
     Driver = driver(Config),
-    ok = Driver:ensure_table(Conn, Table),
-    Driver:set_version(Conn, Table, Version, false).
+    case Driver:ensure_table(Conn, Table) of
+        {error, _} = E -> E;
+        ok -> Driver:set_version(Conn, Table, Version, false)
+    end.
 
 %% Drop schema_migrations table (destructive — use in tests only).
 -spec drop(Config :: map()) -> ok | {error, term()}.
@@ -137,21 +142,24 @@ with_lock(Config, Fun) ->
     Timeout = lock_timeout(Config),
     Logger  = logger(Config),
     Driver  = driver(Config),
-    ok = Driver:ensure_table(Conn, Table),
-    log(Logger, info, fmt("acquiring lock ~b (timeout ~bms)", [LockId, Timeout])),
-    case Driver:lock(Conn, LockId, Timeout) of
-        {error, lock_timeout} ->
-            log(Logger, error, fmt("lock timeout after ~bms", [Timeout])),
-            {error, lock_timeout};
-        {error, _} = E ->
-            log(Logger, error, <<"lock acquisition failed">>),
-            E;
+    case Driver:ensure_table(Conn, Table) of
+        {error, _} = E -> E;
         ok ->
-            log(Logger, info, <<"lock acquired">>),
-            try Fun(Conn, Table, Logger, Driver)
-            after
-                Driver:unlock(Conn, LockId),
-                log(Logger, info, <<"lock released">>)
+            log(Logger, info, fmt("acquiring lock ~b (timeout ~bms)", [LockId, Timeout])),
+            case Driver:lock(Conn, LockId, Timeout) of
+                {error, lock_timeout} ->
+                    log(Logger, error, fmt("lock timeout after ~bms", [Timeout])),
+                    {error, lock_timeout};
+                {error, _} = E ->
+                    log(Logger, error, <<"lock acquisition failed">>),
+                    E;
+                ok ->
+                    log(Logger, info, <<"lock acquired">>),
+                    try Fun(Conn, Table, Logger, Driver)
+                    after
+                        Driver:unlock(Conn, LockId),
+                        log(Logger, info, <<"lock released">>)
+                    end
             end
     end.
 
@@ -175,50 +183,67 @@ pending_down(All, Current, N) ->
 apply_up(_Driver, _Conn, _Table, [], _Logger) -> ok;
 apply_up(Driver, Conn, Table, [M | Rest], Logger) ->
     Version = maps:get(version, M),
-    Title   = maps:get(title, M),
-    UpFile  = maps:get(up_file, M),
-    log(Logger, info, fmt("applying up ~b ~s", [Version, Title])),
+    log(Logger, info, fmt("applying up ~b ~s", [Version, maps:get(title, M)])),
+    case run_one_up(Driver, Conn, Table, Version, maps:get(up_file, M), Logger) of
+        ok             -> apply_up(Driver, Conn, Table, Rest, Logger);
+        {error, _} = E -> E
+    end.
+
+run_one_up(Driver, Conn, Table, Version, UpFile, Logger) ->
     case erlang_migrate_source:read_sql(UpFile, up) of
         {error, _} = E -> E;
         {ok, SQL} ->
-            ok = Driver:set_version(Conn, Table, Version, true),
-            case Driver:exec_sql(Conn, SQL) of
-                {error, _} = E ->
-                    log(Logger, error, fmt("failed up ~b — dirty state set", [Version])),
-                    E;
+            case Driver:set_version(Conn, Table, Version, true) of
+                {error, _} = E -> E;
                 ok ->
-                    ok = Driver:set_version(Conn, Table, Version, false),
-                    log(Logger, info, fmt("applied up ~b", [Version])),
-                    apply_up(Driver, Conn, Table, Rest, Logger)
+                    case Driver:exec_sql(Conn, SQL) of
+                        {error, _} = E ->
+                            log(Logger, error, fmt("failed up ~b — dirty state set", [Version])),
+                            E;
+                        ok ->
+                            case Driver:set_version(Conn, Table, Version, false) of
+                                {error, _} = E -> E;
+                                ok ->
+                                    log(Logger, info, fmt("applied up ~b", [Version])),
+                                    ok
+                            end
+                    end
             end
     end.
 
 apply_down(_Driver, _Conn, _Table, [], _Logger) -> ok;
 apply_down(Driver, Conn, Table, [M | Rest], Logger) ->
     Version  = maps:get(version, M),
-    Title    = maps:get(title, M),
     DownFile = maps:get(down_file, M),
     case DownFile of
-        undefined ->
-            {error, {no_down_migration, Version}};
+        undefined -> {error, {no_down_migration, Version}};
         _ ->
-            log(Logger, info, fmt("applying down ~b ~s", [Version, Title])),
-            case erlang_migrate_source:read_sql(DownFile, down) of
+            log(Logger, info, fmt("applying down ~b ~s", [Version, maps:get(title, M)])),
+            PrevVersion = case Rest of [] -> undefined; [Next | _] -> maps:get(version, Next) end,
+            case run_one_down(Driver, Conn, Table, Version, PrevVersion, DownFile, Logger) of
+                ok             -> apply_down(Driver, Conn, Table, Rest, Logger);
+                {error, _} = E -> E
+            end
+    end.
+
+run_one_down(Driver, Conn, Table, Version, PrevVersion, DownFile, Logger) ->
+    case erlang_migrate_source:read_sql(DownFile, down) of
+        {error, _} = E -> E;
+        {ok, SQL} ->
+            case Driver:set_version(Conn, Table, Version, true) of
                 {error, _} = E -> E;
-                {ok, SQL} ->
-                    ok = Driver:set_version(Conn, Table, Version, true),
+                ok ->
                     case Driver:exec_sql(Conn, SQL) of
                         {error, _} = E ->
                             log(Logger, error, fmt("failed down ~b — dirty state set", [Version])),
                             E;
                         ok ->
-                            PrevVersion = case Rest of
-                                []         -> undefined;
-                                [Next | _] -> maps:get(version, Next)
-                            end,
-                            ok = Driver:set_version(Conn, Table, PrevVersion, false),
-                            log(Logger, info, fmt("applied down ~b", [Version])),
-                            apply_down(Driver, Conn, Table, Rest, Logger)
+                            case Driver:set_version(Conn, Table, PrevVersion, false) of
+                                {error, _} = E -> E;
+                                ok ->
+                                    log(Logger, info, fmt("applied down ~b", [Version])),
+                                    ok
+                            end
                     end
             end
     end.
@@ -240,7 +265,13 @@ logger(_)                                     -> undefined.
 log(undefined, _Level, _Msg) -> ok;
 log(Fun, Level, Msg)         -> Fun(Level, Msg).
 
-driver(#{driver := D}) -> D;
+%% Raises error/1 for bad driver config — these are programmer errors caught at startup, not runtime.
+driver(#{driver := D}) when is_atom(D) ->
+    case code:which(D) of
+        non_existing -> error({unknown_driver, D});
+        _            -> D
+    end;
+driver(#{driver := D}) -> error({invalid_driver, D});
 driver(_)              -> erlang_migrate_pg.
 
 fmt(Fmt, Args) -> iolist_to_binary(io_lib:format(Fmt, Args)).

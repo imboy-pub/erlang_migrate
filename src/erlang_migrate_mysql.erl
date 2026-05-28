@@ -77,15 +77,19 @@ set_version(Conn, Table, undefined, _Dirty) ->
     end;
 set_version(Conn, Table, Version, Dirty) ->
     DirtyInt = case Dirty of true -> "1"; false -> "0" end,
-    Del = iolist_to_binary(["DELETE FROM ", table_ref(Table)]),
-    Ins = iolist_to_binary([
-        "INSERT INTO ", table_ref(Table),
+    %% Delete rows for other versions, then atomically upsert the current one.
+    Del = iolist_to_binary([
+        "DELETE FROM ", table_ref(Table),
+        " WHERE version != ", integer_to_binary(Version)
+    ]),
+    Upsert = iolist_to_binary([
+        "REPLACE INTO ", table_ref(Table),
         " (version, dirty, applied_at) VALUES (",
         integer_to_binary(Version), ", ", DirtyInt, ", NOW(6))"
     ]),
     case mysql:query(Conn, Del) of
         ok  ->
-            case mysql:query(Conn, Ins) of
+            case mysql:query(Conn, Upsert) of
                 ok  -> ok;
                 Err -> {error, {set_version_failed, Err}}
             end;
@@ -116,8 +120,15 @@ drop_table(Conn, Table) ->
 
 %%% Internal
 
-table_ref(Table) when is_binary(Table) -> Table;
-table_ref(Table) when is_list(Table)   -> list_to_binary(Table).
+table_ref(Table) when is_binary(Table) -> validate_table_name(Table);
+table_ref(Table) when is_list(Table)   -> validate_table_name(list_to_binary(Table)).
+
+%% Raises error/1 (not {error,_}) — invalid table name is a programmer error, not a runtime condition.
+validate_table_name(Name) ->
+    case re:run(Name, "^[a-zA-Z_][a-zA-Z0-9_]*$", [{capture, none}]) of
+        match   -> Name;
+        nomatch -> error({invalid_table_name, Name})
+    end.
 
 lock_name(LockId) ->
     iolist_to_binary(["erlang_migrate_", integer_to_list(LockId)]).

@@ -19,7 +19,7 @@ ensure_table(Conn, Table) ->
         "  applied_at TEXT    NOT NULL DEFAULT (datetime('now'))",
         ")"
     ]),
-    case esqlite3:exec(SQL, Conn) of
+    case esqlite3:exec(Conn, SQL) of
         ok  -> ok;
         Err -> {error, {ensure_table_failed, Err}}
     end.
@@ -30,9 +30,9 @@ current_version(Conn, Table) ->
         "SELECT version, dirty FROM ", table_ref(Table),
         " ORDER BY version DESC LIMIT 1"
     ]),
-    case esqlite3:q(SQL, Conn) of
+    case esqlite3:q(Conn, SQL) of
         []                   -> {ok, undefined, false};
-        [{VerInt, DirtyInt}] -> {ok, VerInt, DirtyInt =:= 1};
+        [[VerInt, DirtyInt]] -> {ok, VerInt, DirtyInt =:= 1};
         Err                  -> {error, {query_failed, Err}}
     end.
 
@@ -67,21 +67,25 @@ unlock(_Conn, LockId) ->
 %% Replace the single tracking row (golang-migrate semantics).
 set_version(Conn, Table, undefined, _Dirty) ->
     SQL = iolist_to_binary(["DELETE FROM ", table_ref(Table)]),
-    case esqlite3:exec(SQL, Conn) of
+    case esqlite3:exec(Conn, SQL) of
         ok  -> ok;
         Err -> {error, {set_version_failed, Err}}
     end;
 set_version(Conn, Table, Version, Dirty) ->
     DirtyInt = case Dirty of true -> "1"; false -> "0" end,
-    Del = iolist_to_binary(["DELETE FROM ", table_ref(Table)]),
-    Ins = iolist_to_binary([
-        "INSERT INTO ", table_ref(Table),
+    %% Delete rows for other versions, then atomically upsert the current one.
+    Del = iolist_to_binary([
+        "DELETE FROM ", table_ref(Table),
+        " WHERE version != ", integer_to_binary(Version)
+    ]),
+    Upsert = iolist_to_binary([
+        "INSERT OR REPLACE INTO ", table_ref(Table),
         " (version, dirty, applied_at) VALUES (",
         integer_to_binary(Version), ", ", DirtyInt, ", datetime('now'))"
     ]),
-    case esqlite3:exec(Del, Conn) of
+    case esqlite3:exec(Conn, Del) of
         ok  ->
-            case esqlite3:exec(Ins, Conn) of
+            case esqlite3:exec(Conn, Upsert) of
                 ok  -> ok;
                 Err -> {error, {set_version_failed, Err}}
             end;
@@ -97,7 +101,7 @@ is_dirty(Conn, Table) ->
 
 %% Execute arbitrary SQL (for migration content).
 exec_sql(Conn, SQL) when is_binary(SQL) ->
-    case esqlite3:exec(SQL, Conn) of
+    case esqlite3:exec(Conn, SQL) of
         ok  -> ok;
         Err -> {error, {sql_exec_failed, Err}}
     end.
@@ -105,12 +109,19 @@ exec_sql(Conn, SQL) when is_binary(SQL) ->
 %% Drop schema_migrations table.
 drop_table(Conn, Table) ->
     SQL = iolist_to_binary(["DROP TABLE IF EXISTS ", table_ref(Table)]),
-    case esqlite3:exec(SQL, Conn) of
+    case esqlite3:exec(Conn, SQL) of
         ok  -> ok;
         Err -> {error, {drop_failed, Err}}
     end.
 
 %%% Internal
 
-table_ref(Table) when is_binary(Table) -> Table;
-table_ref(Table) when is_list(Table)   -> list_to_binary(Table).
+table_ref(Table) when is_binary(Table) -> validate_table_name(Table);
+table_ref(Table) when is_list(Table)   -> validate_table_name(list_to_binary(Table)).
+
+%% Raises error/1 (not {error,_}) — invalid table name is a programmer error, not a runtime condition.
+validate_table_name(Name) ->
+    case re:run(Name, "^[a-zA-Z_][a-zA-Z0-9_]*$", [{capture, none}]) of
+        match   -> Name;
+        nomatch -> error({invalid_table_name, Name})
+    end.
