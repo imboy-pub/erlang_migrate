@@ -1,6 +1,7 @@
 %% @doc PostgreSQL driver for erlang_migrate.
 %% Manages schema_migrations table and advisory locks.
 -module(erlang_migrate_pg).
+-behaviour(erlang_migrate_driver).
 -export([ensure_table/2, current_version/2, lock/2, lock/3, unlock/2,
          set_version/4, clear_dirty/2, is_dirty/2, drop_table/2,
          exec_sql/2]).
