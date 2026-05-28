@@ -4,9 +4,7 @@
 
 **Erlang/OTP 数据库迁移库 —— 像素级对标 [golang-migrate/migrate v4](https://github.com/golang-migrate/migrate) 的设计实现。**
 
-> Currently supported database: **PostgreSQL 18+**
->
-> 当前支持的数据库：**PostgreSQL 18+**
+> Supported databases / 支持的数据库：**PostgreSQL 18+** · **MySQL 8+** · **SQLite 3+**
 
 ---
 
@@ -196,10 +194,11 @@ ok = erlang_migrate:drop(Config).
 
 | Key / 键 | Required / 必填 | Default / 默认值 | Description / 说明 |
 |----------|-----------------|-----------------|---------------------|
-| `conn` | yes / 是 | — | `epgsql` connection pid / epgsql 连接进程 |
+| `conn` | yes / 是 | — | Database connection pid / 数据库连接进程 |
 | `dir` | yes / 是 | — | Path to migration files / 迁移文件目录路径 |
+| `driver` | no / 否 | `erlang_migrate_pg` | Driver module / 驱动模块，见下方驱动说明 |
 | `table` | no / 否 | `<<"schema_migrations">>` | Tracking table name / 迁移状态表名 |
-| `lock_id` | no / 否 | `erlang:phash2(Table)` | PostgreSQL advisory lock ID / advisory lock 整数 ID |
+| `lock_id` | no / 否 | `erlang:phash2(Table)` | Advisory lock ID (auto-derived) / 锁 ID（自动派生）|
 | `lock_timeout` | no / 否 | `15000` | Lock wait timeout in ms / 获锁等待超时毫秒数 |
 | `logger` | no / 否 | `undefined` | `fun(Level, Msg) -> ok` callback / 日志回调函数 |
 
@@ -308,12 +307,18 @@ Config = #{
 | Logger interface | ✅ pluggable | ✅ optional `logger` fun/2 in Config | ✅ Done |
 | CLI tooling | ✅ | ❌ library only | 🔲 Future |
 | Source abstraction | ✅ 15+ sources | filesystem only | 🔲 Future |
-| Multi-database | ✅ 15+ | PostgreSQL 18+ only | by design |
+| Multi-database | ✅ 15+ | PostgreSQL / MySQL / SQLite | ✅ Done |
 | Integration tests | ✅ Docker | 🔲 planned | 🔲 Planned |
 
 ---
 
 ## Installation / 安装
+
+### PostgreSQL (default / 默认)
+
+Only `epgsql` is a hard dependency. No extra steps needed.
+
+`epgsql` 是唯一硬依赖，无需额外操作。
 
 ```erlang
 {deps, [
@@ -321,7 +326,51 @@ Config = #{
 ]}.
 ```
 
-Or from GitHub / 或直接从 GitHub：
+```erlang
+Config = #{conn => Conn, dir => "priv/migrations"},
+ok = erlang_migrate:up(Config).
+```
+
+### MySQL 8+
+
+Add `mysql` to your own `deps`, then set `driver => erlang_migrate_mysql` in Config.
+
+在你的项目 `deps` 中添加 `mysql`，Config 中指定驱动即可。
+
+```erlang
+{deps, [
+    {erlang_migrate, "0.1.0"},
+    {mysql, "1.8.0"}           %% add mysql driver yourself / 自行添加驱动依赖
+]}.
+```
+
+```erlang
+{ok, Conn} = mysql:start_link([{host, "localhost"}, {user, "root"},
+                                {password, "pass"}, {database, "mydb"}]),
+Config = #{conn => Conn, dir => "priv/migrations", driver => erlang_migrate_mysql},
+ok = erlang_migrate:up(Config).
+```
+
+### SQLite 3+
+
+Add `esqlite` to your own `deps`, then set `driver => erlang_migrate_sqlite` in Config.
+
+在你的项目 `deps` 中添加 `esqlite`，Config 中指定驱动即可。
+
+```erlang
+{deps, [
+    {erlang_migrate, "0.1.0"},
+    {esqlite, "0.8.1"}         %% add esqlite driver yourself / 自行添加驱动依赖
+]}.
+```
+
+```erlang
+{ok, Conn} = esqlite3:open("mydb.sqlite"),
+Config = #{conn => Conn, dir => "priv/migrations", driver => erlang_migrate_sqlite},
+ok = erlang_migrate:up(Config).
+```
+
+### From GitHub / 从 GitHub 安装
 
 ```erlang
 {deps, [
