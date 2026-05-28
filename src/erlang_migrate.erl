@@ -12,7 +12,7 @@
 %% '''
 %%
 %% == File naming ==
-%% Migrations live in `dir` as pairs:
+%% Migrations live in `dir' as pairs:
 %%   {version}_{title}.up.sql
 %%   {version}_{title}.down.sql   (optional — skipping makes down/2 fail)
 %%
