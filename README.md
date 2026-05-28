@@ -318,15 +318,16 @@ Config = #{
 
 ## Installation / 安装
 
-### PostgreSQL (default / 默认)
+### PostgreSQL
 
-Only `epgsql` is a hard dependency. No extra steps needed.
+Add `epgsql` to your own `deps`. `erlang_migrate` has **zero hard dependencies**.
 
-`epgsql` 是唯一硬依赖，无需额外操作。
+在你的 `deps` 中添加 `epgsql`。`erlang_migrate` **没有任何硬依赖**。
 
 ```erlang
 {deps, [
-    {erlang_migrate, "0.1.0"}
+    {erlang_migrate, "0.1.0"},
+    {epgsql, "4.7.1"}
 ]}.
 ```
 
