@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Correct edoc backtick-quote syntax in module header (``dir'` instead of ``dir``) to fix `edoc` doc chunk generation
+- Fix edoc module header: use backtick+single-quote syntax (dir') instead of double backtick to resolve doc chunk generation error
 
 ## [0.2.0] - 2026-05-28
 
