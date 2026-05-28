@@ -1,4 +1,0 @@
-%% encoding: UTF-8
-{application,erlang_migrate}.
-{modules,[erlang_migrate,erlang_migrate_driver,erlang_migrate_mysql,
-          erlang_migrate_pg,erlang_migrate_source,erlang_migrate_sqlite]}.

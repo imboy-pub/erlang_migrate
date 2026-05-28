@@ -1,1 +1,3 @@
 _build
+doc/
+rebar3.crashdump
