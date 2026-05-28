@@ -119,6 +119,60 @@ priv/migrations/
 
 ---
 
+## Configuration / 配置
+
+All behaviour is controlled by a single `Config` map passed to every API call.
+**No changes to `erlang_migrate` source are needed** — everything is configured at call site.
+
+所有行为通过传入每个 API 调用的 `Config` map 控制。
+**无需修改 `erlang_migrate` 源码** —— 所有定制均在调用方配置。
+
+### Three key customisation points / 三个核心定制项
+
+| Key / 键 | What it controls / 控制什么 | Default / 默认值 |
+|----------|-----------------------------|-----------------|
+| `driver` | Which database backend to use / 使用哪个数据库后端 | `erlang_migrate_pg` |
+| `dir`    | Where migration SQL files live / 迁移 SQL 文件目录 | *(required / 必填)* |
+| `table`  | Name of the tracking table / 迁移状态跟踪表名 | `<<"schema_migrations">>` |
+
+```erlang
+%% PostgreSQL — default driver, custom path and table name
+%% PostgreSQL —— 默认驱动，自定义路径和表名
+Config = #{
+    conn   => Conn,
+    driver => erlang_migrate_pg,            % default, can be omitted / 默认可省略
+    dir    => "priv/migrations/postgres",   % your SQL file directory / 你的迁移文件目录
+    table  => <<"myapp_schema_migrations">> % custom tracking table / 自定义跟踪表名
+},
+ok = erlang_migrate:up(Config).
+
+%% MySQL 8+
+Config = #{
+    conn   => Conn,
+    driver => erlang_migrate_mysql,
+    dir    => "priv/migrations/mysql",
+    table  => <<"myapp_schema_migrations">>
+},
+ok = erlang_migrate:up(Config).
+
+%% SQLite 3+
+Config = #{
+    conn   => Conn,
+    driver => erlang_migrate_sqlite,
+    dir    => "priv/migrations/sqlite",
+    table  => <<"myapp_schema_migrations">>
+},
+ok = erlang_migrate:up(Config).
+```
+
+> The tracking table is created automatically on first run if it does not exist.
+> Lock ID is auto-derived from the table name, so different table names are lock-isolated.
+>
+> 跟踪表在首次运行时自动创建（如不存在）。
+> 锁 ID 从表名自动派生，不同表名之间的锁互相隔离。
+
+---
+
 ## Quick Start / 快速开始
 
 ```erlang
@@ -131,12 +185,11 @@ priv/migrations/
     password => "pass"
 }),
 
-%% 2. Build config / 构建配置
+%% 2. Build config — see "Configuration" section for driver/dir/table options
+%% 构建配置 —— driver/dir/table 定制项见上方「Configuration」章节
 Config = #{
-    conn  => Conn,
-    dir   => "priv/migrations"
-    %% table   => <<"schema_migrations">>,  %% optional / 可选
-    %% lock_id => 12345                      %% optional, auto-derived / 可选，自动派生
+    conn => Conn,
+    dir  => "priv/migrations"
 },
 
 %% 3. Apply all pending migrations / 应用所有待执行迁移
