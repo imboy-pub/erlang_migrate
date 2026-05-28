@@ -225,7 +225,7 @@ table(_)             -> ?DEFAULT_TABLE.
 dir(#{dir := D})     -> D.
 
 lock_id(#{lock_id := Id}, _) -> Id;
-lock_id(_, Table)            -> erlang:phash2(Table, 16#7FFFFFFFFFFFFFFF).
+lock_id(_, Table)            -> erlang:phash2(Table, 1 bsl 30).  %% range 0..2^30-1; phash2 max range is 2^32
 
 lock_timeout(#{lock_timeout := T}) when is_integer(T), T >= 0 -> T;
 lock_timeout(_)                                                -> ?DEFAULT_LOCK_TIMEOUT.
