@@ -1,0 +1,9 @@
+{application, erlang_migrate,
+ [{description, "Database migration library for Erlang/OTP, modeled after golang-migrate/v4"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications, [kernel, stdlib, epgsql]},
+  {env, []},
+  {licenses, ["Apache-2.0"]},
+  {links, [{"GitHub", "https://github.com/imboy-pub/erlang_migrate"}]}
+ ]}.
