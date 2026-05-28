@@ -214,13 +214,17 @@ CREATE TABLE schema_migrations (
 );
 ```
 
-**Design difference from golang-migrate / 与 golang-migrate 的设计差异：**
+The table always contains **at most one row** — the current version state.
+Every `set_version` call is a `DELETE` + optional `INSERT` (when `Version =/= undefined`).
+An empty table means no migrations have been applied.
 
-golang-migrate keeps only **one row** (current version), using `TRUNCATE + INSERT` on every state change.
-`erlang_migrate` keeps **one row per applied version** with `applied_at` — richer audit history.
+表中**永远最多只有一行**——即当前版本状态。
+每次 `set_version` 调用都是 `DELETE` + 可选 `INSERT`（`Version =:= undefined` 时只 DELETE）。
+空表表示尚未执行任何迁移。
 
-golang-migrate 使用 `TRUNCATE + INSERT`，表中**永远只有一行**（当前版本）。
-`erlang_migrate` 每个已应用版本保留**一行记录**，附带 `applied_at` 时间戳，提供更丰富的历史审计。
+This is identical to golang-migrate's `TRUNCATE + INSERT` semantics, ensuring `force/2` always produces a clean single-row state with no stale dirty rows.
+
+这与 golang-migrate 的 `TRUNCATE + INSERT` 语义完全一致，确保 `force/2` 总能产生干净的单行状态，不存在残留 dirty 行。
 
 ---
 

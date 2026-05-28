@@ -18,13 +18,14 @@ setup_mysql(CurrentVersion, IsDirty) ->
     meck:expect(mysql, query,
         fun(_, SQL) when is_binary(SQL) ->
             case SQL of
-                <<"CREATE TABLE", _/binary>>         -> ok;
-                <<"DROP TABLE",   _/binary>>          -> ok;
-                <<"SELECT version", _/binary>>        -> {ok, [version, dirty], Rows};
-                <<"INSERT INTO",   _/binary>>         -> ok;
-                <<"SELECT GET_LOCK", _/binary>>       -> {ok, [result], [[1]]};
-                <<"SELECT RELEASE_LOCK", _/binary>>   -> {ok, [result], [[1]]};
-                _                                     -> ok
+                <<"CREATE TABLE",        _/binary>> -> ok;
+                <<"DROP TABLE",          _/binary>> -> ok;
+                <<"DELETE FROM",         _/binary>> -> ok;
+                <<"SELECT version",      _/binary>> -> {ok, [version, dirty], Rows};
+                <<"INSERT INTO",         _/binary>> -> ok;
+                <<"SELECT GET_LOCK",     _/binary>> -> {ok, [result], [[1]]};
+                <<"SELECT RELEASE_LOCK", _/binary>> -> {ok, [result], [[1]]};
+                _                                   -> ok
             end
         end).
 
@@ -90,7 +91,10 @@ set_version_ok_test() ->
     setup_mysql(undefined, false),
     try
         ok = erlang_migrate_mysql:set_version(?CONN, ?TABLE, 1, false),
-        ok = erlang_migrate_mysql:set_version(?CONN, ?TABLE, 1, true)
+        ok = erlang_migrate_mysql:set_version(?CONN, ?TABLE, 1, true),
+        ok = erlang_migrate_mysql:set_version(?CONN, ?TABLE, undefined, false),
+        %% 2x (DELETE+INSERT) + 1x DELETE-only = 5 mysql:query calls
+        ?assertEqual(5, meck:num_calls(mysql, query, '_'))
     after teardown() end.
 
 %%% ── is_dirty ────────────────────────────────────────────────────────────────

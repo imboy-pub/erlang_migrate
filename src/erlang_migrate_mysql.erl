@@ -68,18 +68,27 @@ unlock(Conn, LockId) ->
     mysql:query(Conn, SQL),
     ok.
 
-%% Upsert version row with dirty flag.
-set_version(Conn, Table, Version, Dirty) ->
-    DirtyInt = case Dirty of true -> "1"; false -> "0" end,
-    SQL = iolist_to_binary([
-        "INSERT INTO ", table_ref(Table),
-        " (version, dirty, applied_at) VALUES (",
-        integer_to_binary(Version), ", ", DirtyInt, ", NOW(6))",
-        " ON DUPLICATE KEY UPDATE",
-        " dirty = VALUES(dirty), applied_at = VALUES(applied_at)"
-    ]),
+%% Replace the single tracking row (golang-migrate semantics).
+set_version(Conn, Table, undefined, _Dirty) ->
+    SQL = iolist_to_binary(["DELETE FROM ", table_ref(Table)]),
     case mysql:query(Conn, SQL) of
         ok  -> ok;
+        Err -> {error, {set_version_failed, Err}}
+    end;
+set_version(Conn, Table, Version, Dirty) ->
+    DirtyInt = case Dirty of true -> "1"; false -> "0" end,
+    Del = iolist_to_binary(["DELETE FROM ", table_ref(Table)]),
+    Ins = iolist_to_binary([
+        "INSERT INTO ", table_ref(Table),
+        " (version, dirty, applied_at) VALUES (",
+        integer_to_binary(Version), ", ", DirtyInt, ", NOW(6))"
+    ]),
+    case mysql:query(Conn, Del) of
+        ok  ->
+            case mysql:query(Conn, Ins) of
+                ok  -> ok;
+                Err -> {error, {set_version_failed, Err}}
+            end;
         Err -> {error, {set_version_failed, Err}}
     end.
 

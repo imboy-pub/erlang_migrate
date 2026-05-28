@@ -212,11 +212,11 @@ apply_down(Driver, Conn, Table, [M | Rest], Logger) ->
                             log(Logger, error, fmt("failed down ~b — dirty state set", [Version])),
                             E;
                         ok ->
-                            DelSQL = iolist_to_binary([
-                                "DELETE FROM ", Table,
-                                " WHERE version = ", integer_to_binary(Version)
-                            ]),
-                            ok = Driver:exec_sql(Conn, DelSQL),
+                            PrevVersion = case Rest of
+                                []         -> undefined;
+                                [Next | _] -> maps:get(version, Next)
+                            end,
+                            ok = Driver:set_version(Conn, Table, PrevVersion, false),
                             log(Logger, info, fmt("applied down ~b", [Version])),
                             apply_down(Driver, Conn, Table, Rest, Logger)
                     end

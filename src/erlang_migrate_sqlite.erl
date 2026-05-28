@@ -64,16 +64,27 @@ unlock(_Conn, LockId) ->
     global:del_lock({{erlang_migrate_lock, LockId}, self()}, [node()]),
     ok.
 
-%% Upsert version row with dirty flag.
+%% Replace the single tracking row (golang-migrate semantics).
+set_version(Conn, Table, undefined, _Dirty) ->
+    SQL = iolist_to_binary(["DELETE FROM ", table_ref(Table)]),
+    case esqlite3:exec(SQL, Conn) of
+        ok  -> ok;
+        Err -> {error, {set_version_failed, Err}}
+    end;
 set_version(Conn, Table, Version, Dirty) ->
     DirtyInt = case Dirty of true -> "1"; false -> "0" end,
-    SQL = iolist_to_binary([
-        "INSERT OR REPLACE INTO ", table_ref(Table),
+    Del = iolist_to_binary(["DELETE FROM ", table_ref(Table)]),
+    Ins = iolist_to_binary([
+        "INSERT INTO ", table_ref(Table),
         " (version, dirty, applied_at) VALUES (",
         integer_to_binary(Version), ", ", DirtyInt, ", datetime('now'))"
     ]),
-    case esqlite3:exec(SQL, Conn) of
-        ok  -> ok;
+    case esqlite3:exec(Del, Conn) of
+        ok  ->
+            case esqlite3:exec(Ins, Conn) of
+                ok  -> ok;
+                Err -> {error, {set_version_failed, Err}}
+            end;
         Err -> {error, {set_version_failed, Err}}
     end.
 

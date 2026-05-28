@@ -73,20 +73,30 @@ unlock(Conn, LockId) ->
     epgsql:squery(Conn, lists:flatten(SQL)),
     ok.
 
-%% Upsert version row with dirty flag.
+%% Replace the single tracking row (golang-migrate semantics: always one row).
+%% Version = undefined means DELETE only — table empty = no migrations applied.
+set_version(Conn, Table, undefined, _Dirty) ->
+    SQL = iolist_to_binary(["DELETE FROM ", table_ref(Table)]),
+    case epgsql:squery(Conn, SQL) of
+        {ok, _} -> ok;
+        Err     -> {error, {set_version_failed, Err}}
+    end;
 set_version(Conn, Table, Version, Dirty) ->
     DirtyStr = case Dirty of true -> "true"; false -> "false" end,
-    SQL = iolist_to_binary([
+    Del = iolist_to_binary(["DELETE FROM ", table_ref(Table)]),
+    Ins = iolist_to_binary([
         "INSERT INTO ", table_ref(Table),
         " (version, dirty, applied_at) VALUES (",
-        integer_to_binary(Version), ", ", DirtyStr, ", now())",
-        " ON CONFLICT (version) DO UPDATE",
-        " SET dirty = EXCLUDED.dirty, applied_at = EXCLUDED.applied_at"
+        integer_to_binary(Version), ", ", DirtyStr, ", now())"
     ]),
-    case epgsql:squery(Conn, SQL) of
-        {ok, _}   -> ok;
-        {ok, _, _} -> ok;
-        Err        -> {error, {set_version_failed, Err}}
+    case epgsql:squery(Conn, Del) of
+        {ok, _} ->
+            case epgsql:squery(Conn, Ins) of
+                {ok, _}    -> ok;
+                {ok, _, _} -> ok;
+                Err        -> {error, {set_version_failed, Err}}
+            end;
+        Err -> {error, {set_version_failed, Err}}
     end.
 
 %% Clear dirty flag for current version.

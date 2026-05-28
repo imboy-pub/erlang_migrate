@@ -17,9 +17,10 @@
 %% Release the advisory lock acquired by lock/3.
 -callback unlock(Conn :: term(), LockId :: integer()) -> ok.
 
-%% Upsert a version row with the given dirty flag.
+%% Replace the single tracking row (DELETE + INSERT).
+%% Version = undefined means DELETE only (no migrations applied).
 -callback set_version(Conn :: term(), Table :: binary(),
-                      Version :: integer(), Dirty :: boolean()) ->
+                      Version :: integer() | undefined, Dirty :: boolean()) ->
     ok | {error, term()}.
 
 %% Return {ok, true|false} indicating whether the current version row is dirty.

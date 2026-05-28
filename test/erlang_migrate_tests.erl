@@ -85,10 +85,10 @@ down_all_test() ->
     setup_pg(3, false), setup_source(migrations_3()),
     try
         ok = erlang_migrate:down(config()),
-        %% 3 rollbacks x dirty=true; DELETE via exec_sql removes the row
-        ?assertEqual(3, meck:num_calls(erlang_migrate_pg, set_version, '_')),
-        %% 3 migration SQL + 3 DELETE SQL
-        ?assertEqual(6, meck:num_calls(erlang_migrate_pg, exec_sql, '_'))
+        %% 3 rollbacks x (dirty=true + set prev version) = 6 set_version calls
+        ?assertEqual(6, meck:num_calls(erlang_migrate_pg, set_version, '_')),
+        %% only migration SQL, no raw DELETE SQL
+        ?assertEqual(3, meck:num_calls(erlang_migrate_pg, exec_sql, '_'))
     after teardown() end.
 
 down_from_undefined_is_noop_test() ->
@@ -104,14 +104,16 @@ down_n_steps_test() ->
     setup_pg(3, false), setup_source(migrations_3()),
     try
         ok = erlang_migrate:down(config(), 2),
-        ?assertEqual(2, meck:num_calls(erlang_migrate_pg, set_version, '_'))
+        %% 2 rollbacks x 2 set_version each = 4
+        ?assertEqual(4, meck:num_calls(erlang_migrate_pg, set_version, '_'))
     after teardown() end.
 
 down_one_step_test() ->
     setup_pg(2, false), setup_source(migrations_3()),
     try
         ok = erlang_migrate:down(config(), 1),
-        ?assertEqual(1, meck:num_calls(erlang_migrate_pg, set_version, '_'))
+        %% 1 rollback x 2 set_version = 2
+        ?assertEqual(2, meck:num_calls(erlang_migrate_pg, set_version, '_'))
     after teardown() end.
 
 %%% ── goto/2 ───────────────────────────────────────────────────────────────
@@ -127,8 +129,8 @@ goto_down_test() ->
     setup_pg(3, false), setup_source(migrations_3()),
     try
         ok = erlang_migrate:goto(config(), 1),
-        %% roll back versions 3 and 2 (dirty=true each)
-        ?assertEqual(2, meck:num_calls(erlang_migrate_pg, set_version, '_'))
+        %% roll back v3 and v2: 2 rollbacks x 2 set_version each = 4
+        ?assertEqual(4, meck:num_calls(erlang_migrate_pg, set_version, '_'))
     after teardown() end.
 
 goto_same_version_is_noop_test() ->

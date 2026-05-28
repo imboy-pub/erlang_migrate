@@ -95,7 +95,9 @@ set_version_ok_test() ->
     try
         ok = erlang_migrate_sqlite:set_version(?CONN, ?TABLE, 1, false),
         ok = erlang_migrate_sqlite:set_version(?CONN, ?TABLE, 1, true),
-        ?assertEqual(2, meck:num_calls(esqlite3, exec, '_'))
+        ok = erlang_migrate_sqlite:set_version(?CONN, ?TABLE, undefined, false),
+        %% 2x (DELETE+INSERT) + 1x DELETE-only = 5 esqlite3:exec calls
+        ?assertEqual(5, meck:num_calls(esqlite3, exec, '_'))
     after teardown() end.
 
 %%% ── is_dirty ────────────────────────────────────────────────────────────────
