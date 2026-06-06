@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-06-06
+
+### Fixed
+
+- `set_version` (all drivers): wrap DELETE+UPSERT in a single transaction to prevent partial state on process crash (#1)
+- `run_one_up`/`run_one_down`: retry `set_version(false)` on transient failure after `exec_sql` succeeds — configurable via `set_version_retries` and `set_version_retry_ms` (#2)
+- `exec_sql` (MySQL, SQLite): wrap in `BEGIN`/`COMMIT`/`ROLLBACK` — was unprotected, PG already had it (#5)
+- `force/2`: validate that the requested version exists in source files when `dir` is configured; rejects phantom versions like `999999` (#6)
+- Table name regex: allow schema-qualified names (`public.schema_migrations`) in all three drivers (#11)
+
+### Added
+
+- **GracefulStop**: send `erlang_migrate_abort` to the migration process to abort between migrations (`MigPid ! erlang_migrate_abort`) (#3)
+- **dry_run mode**: set `dry_run => true` in Config to log what would be applied without touching the database (#14)
+- **Structured logging**: logger callback now supports `fun(Level, Meta, Msg)` (3-arity) in addition to the existing `fun(Level, Msg)` — `Meta` is a map carrying `version`, `title`, `dry_run`, etc. (#16)
+- Log "applied up N" / "applied down N" on success for each migration (#16)
+- `goto/2`: use `dropwhile`/`takewhile` for O(range) traversal instead of full-list comprehension (#15)
+
+### Tests
+
+- 95 EUnit tests (was 57), 0 failures; 38 new tests covering all fixes above
+
 ## [0.2.2] - 2026-05-28
 
 ### Fixed
