@@ -83,7 +83,6 @@ set_version(Conn, Table, undefined, _Dirty) ->
     end;
 set_version(Conn, Table, Version, Dirty) ->
     DirtyStr = case Dirty of true -> "true"; false -> "false" end,
-    %% Delete rows for other versions, then upsert the current one atomically.
     Del = iolist_to_binary([
         "DELETE FROM ", table_ref(Table),
         " WHERE version != ", integer_to_binary(Version)
@@ -95,15 +94,19 @@ set_version(Conn, Table, Version, Dirty) ->
         " ON CONFLICT (version) DO UPDATE"
         " SET dirty = EXCLUDED.dirty, applied_at = EXCLUDED.applied_at"
     ]),
-    case epgsql:squery(Conn, Del) of
-        {ok, _} ->
-            case epgsql:squery(Conn, Upsert) of
-                {ok, _}    -> ok;
-                {ok, _, _} -> ok;
-                Err        -> {error, {set_version_failed, Err}}
-            end;
-        Err -> {error, {set_version_failed, Err}}
-    end.
+    %% Fix #1: wrap DELETE + UPSERT in a single transaction to prevent
+    %% partial state if the process crashes between the two statements.
+    with_pg_transaction(Conn, fun() ->
+        case epgsql:squery(Conn, Del) of
+            {ok, _} ->
+                case epgsql:squery(Conn, Upsert) of
+                    {ok, _}    -> ok;
+                    {ok, _, _} -> ok;
+                    Err        -> {error, {set_version_failed, Err}}
+                end;
+            Err -> {error, {set_version_failed, Err}}
+        end
+    end).
 
 %% Check if current state is dirty.
 is_dirty(Conn, Table) ->
@@ -124,18 +127,27 @@ drop_table(Conn, Table) ->
 %% Execute arbitrary SQL (for migration content).
 %% Wraps execution in BEGIN/COMMIT so multi-statement SQL is rolled back atomically on error.
 exec_sql(Conn, SQL) when is_binary(SQL) ->
+    with_pg_transaction(Conn, fun() ->
+        run_sql(Conn, binary_to_list(SQL))
+    end).
+
+%%% Internal
+
+with_pg_transaction(Conn, Fun) ->
     case epgsql:squery(Conn, "BEGIN") of
-        {ok, _} ->
-            case run_sql(Conn, binary_to_list(SQL)) of
-                ok ->
-                    epgsql:squery(Conn, "COMMIT"),
-                    ok;
-                {error, _} = Err ->
-                    epgsql:squery(Conn, "ROLLBACK"),
-                    Err
-            end;
-        Err ->
-            {error, {begin_failed, Err}}
+        {ok, _}    -> run_transaction(Conn, Fun);
+        {ok, _, _} -> run_transaction(Conn, Fun);
+        Err        -> {error, {begin_failed, Err}}
+    end.
+
+run_transaction(Conn, Fun) ->
+    case Fun() of
+        ok ->
+            epgsql:squery(Conn, "COMMIT"),
+            ok;
+        {error, _} = Err ->
+            epgsql:squery(Conn, "ROLLBACK"),
+            Err
     end.
 
 run_sql(Conn, SQL) ->
@@ -150,14 +162,15 @@ run_sql(Conn, SQL) ->
         {error, E} -> {error, {sql_exec_failed, E}}
     end.
 
-%%% Internal
-
 table_ref(Table) when is_binary(Table) -> validate_table_name(Table);
 table_ref(Table) when is_list(Table)   -> validate_table_name(list_to_binary(Table)).
 
-%% Raises error/1 (not {error,_}) — invalid table name is a programmer error, not a runtime condition.
+%% Fix #11: allow schema-qualified names (e.g. "public.schema_migrations").
+%% The dot-separated form is safe against injection since both parts must match
+%% the simple identifier pattern.
 validate_table_name(Name) ->
-    case re:run(Name, "^[a-zA-Z_][a-zA-Z0-9_]*$", [{capture, none}]) of
+    case re:run(Name, "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)?$",
+                [{capture, none}]) of
         match   -> Name;
         nomatch -> error({invalid_table_name, Name})
     end.

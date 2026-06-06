@@ -18,14 +18,18 @@ setup_mysql(CurrentVersion, IsDirty) ->
     meck:expect(mysql, query,
         fun(_, SQL) when is_binary(SQL) ->
             case SQL of
-                <<"CREATE TABLE",        _/binary>> -> ok;
-                <<"DROP TABLE",          _/binary>> -> ok;
-                <<"DELETE FROM",         _/binary>> -> ok;
-                <<"SELECT version",      _/binary>> -> {ok, [version, dirty], Rows};
-                <<"INSERT INTO",         _/binary>> -> ok;
+                <<"BEGIN">>                  -> ok;
+                <<"COMMIT">>                 -> ok;
+                <<"ROLLBACK">>               -> ok;
+                <<"CREATE TABLE",  _/binary>> -> ok;
+                <<"DROP TABLE",    _/binary>> -> ok;
+                <<"DELETE FROM",   _/binary>> -> ok;
+                <<"SELECT version",_/binary>> -> {ok, [version, dirty], Rows};
+                <<"INSERT INTO",   _/binary>> -> ok;
+                <<"REPLACE INTO",  _/binary>> -> ok;
                 <<"SELECT GET_LOCK",     _/binary>> -> {ok, [result], [[1]]};
                 <<"SELECT RELEASE_LOCK", _/binary>> -> {ok, [result], [[1]]};
-                _                                   -> ok
+                _                            -> ok
             end
         end).
 
@@ -85,7 +89,7 @@ unlock_ok_test() ->
         ok = erlang_migrate_mysql:unlock(?CONN, 12345)
     after teardown() end.
 
-%%% ── set_version ─────────────────────────────────────────────────────────────
+%%% ── set_version transaction ─────────────────────────────────────────────────
 
 set_version_ok_test() ->
     setup_mysql(undefined, false),
@@ -93,9 +97,76 @@ set_version_ok_test() ->
         ok = erlang_migrate_mysql:set_version(?CONN, ?TABLE, 1, false),
         ok = erlang_migrate_mysql:set_version(?CONN, ?TABLE, 1, true),
         ok = erlang_migrate_mysql:set_version(?CONN, ?TABLE, undefined, false),
-        %% 2x (DELETE+INSERT) + 1x DELETE-only = 5 mysql:query calls
-        ?assertEqual(5, meck:num_calls(mysql, query, '_'))
+        %% 2x (BEGIN+DELETE+REPLACE+COMMIT) + 1x DELETE-only = 9 mysql:query calls
+        ?assertEqual(9, meck:num_calls(mysql, query, '_'))
     after teardown() end.
+
+set_version_wraps_in_transaction_test() ->
+    setup_mysql(undefined, false),
+    try
+        ok = erlang_migrate_mysql:set_version(?CONN, ?TABLE, 7, false),
+        ?assert(meck:called(mysql, query, [?CONN, <<"BEGIN">>])),
+        ?assert(meck:called(mysql, query, [?CONN, <<"COMMIT">>]))
+    after teardown() end.
+
+set_version_rollback_on_failure_test() ->
+    meck:new(mysql, [no_link, non_strict]),
+    meck:expect(mysql, query, fun(_, SQL) ->
+        case SQL of
+            <<"BEGIN">>               -> ok;
+            <<"ROLLBACK">>            -> ok;
+            <<"DELETE FROM", _/binary>> -> {error, <<"simulated delete failure">>};
+            _                         -> ok
+        end
+    end),
+    try
+        {error, _} = erlang_migrate_mysql:set_version(?CONN, ?TABLE, 5, false),
+        ?assert(meck:called(mysql, query, [?CONN, <<"ROLLBACK">>])),
+        ?assertNot(meck:called(mysql, query, [?CONN, <<"COMMIT">>]))
+    after teardown() end.
+
+%%% ── exec_sql transaction ────────────────────────────────────────────────────
+
+exec_sql_ok_test() ->
+    setup_mysql(undefined, false),
+    try
+        ok = erlang_migrate_mysql:exec_sql(?CONN, <<"ALTER TABLE foo ADD COLUMN bar INT">>)
+    after teardown() end.
+
+exec_sql_wraps_in_transaction_test() ->
+    setup_mysql(undefined, false),
+    try
+        ok = erlang_migrate_mysql:exec_sql(?CONN, <<"ALTER TABLE foo ADD COLUMN bar INT">>),
+        ?assert(meck:called(mysql, query, [?CONN, <<"BEGIN">>])),
+        ?assert(meck:called(mysql, query, [?CONN, <<"COMMIT">>]))
+    after teardown() end.
+
+exec_sql_rollback_on_failure_test() ->
+    meck:new(mysql, [no_link, non_strict]),
+    meck:expect(mysql, query, fun(_, SQL) ->
+        case SQL of
+            <<"BEGIN">>    -> ok;
+            <<"ROLLBACK">> -> ok;
+            _              -> {error, <<"simulated sql failure">>}
+        end
+    end),
+    try
+        {error, _} = erlang_migrate_mysql:exec_sql(?CONN, <<"BAD SQL">>),
+        ?assert(meck:called(mysql, query, [?CONN, <<"ROLLBACK">>])),
+        ?assertNot(meck:called(mysql, query, [?CONN, <<"COMMIT">>]))
+    after teardown() end.
+
+%%% ── validate_table_name (schema.table support) ──────────────────────────────
+
+validate_table_name_schema_qualified_test() ->
+    setup_mysql(undefined, false),
+    try
+        ok = erlang_migrate_mysql:ensure_table(?CONN, <<"mydb.schema_migrations">>)
+    after teardown() end.
+
+validate_table_name_rejects_injection_test() ->
+    ?assertError({invalid_table_name, _},
+                 erlang_migrate_mysql:ensure_table(fake_conn, <<"foo; DROP TABLE users--">>)).
 
 %%% ── is_dirty ────────────────────────────────────────────────────────────────
 
@@ -109,14 +180,6 @@ is_dirty_true_test() ->
     setup_mysql(2, true),
     try
         ?assertEqual({ok, true}, erlang_migrate_mysql:is_dirty(?CONN, ?TABLE))
-    after teardown() end.
-
-%%% ── exec_sql ────────────────────────────────────────────────────────────────
-
-exec_sql_ok_test() ->
-    setup_mysql(undefined, false),
-    try
-        ok = erlang_migrate_mysql:exec_sql(?CONN, <<"ALTER TABLE foo ADD COLUMN bar INT">>)
     after teardown() end.
 
 %%% ── drop_table ──────────────────────────────────────────────────────────────

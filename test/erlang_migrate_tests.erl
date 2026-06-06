@@ -167,7 +167,7 @@ version_dirty_false_test() ->
 %%% ── force/2 ──────────────────────────────────────────────────────────────
 
 force_sets_version_clears_dirty_test() ->
-    setup_pg(undefined, true),
+    setup_pg(undefined, true), setup_source(migrations_3()),
     try
         ok = erlang_migrate:force(config(), 3),
         ?assertEqual(1, meck:num_calls(erlang_migrate_pg, set_version,
@@ -175,11 +175,33 @@ force_sets_version_clears_dirty_test() ->
     after teardown() end.
 
 force_bypasses_dirty_check_test() ->
-    setup_pg(2, true),
+    setup_pg(2, true), setup_source(migrations_3()),
     try
         ok = erlang_migrate:force(config(), 2),
         ?assertEqual(1, meck:num_calls(erlang_migrate_pg, set_version, '_')),
         ?assertEqual(0, meck:num_calls(erlang_migrate_pg, lock, '_'))
+    after teardown() end.
+
+force_rejects_unknown_version_test() ->
+    setup_pg(undefined, false), setup_source(migrations_3()),
+    try
+        %% Version 999 does not exist in migrations_3()
+        {error, {unknown_version, 999, _}} = erlang_migrate:force(config(), 999)
+    after teardown() end.
+
+force_allows_undefined_to_clear_test() ->
+    setup_pg(3, false), setup_source([]),
+    try
+        ok = erlang_migrate:force(config(), undefined),
+        ?assertEqual(1, meck:num_calls(erlang_migrate_pg, set_version,
+                                       [test_conn, '_', undefined, false]))
+    after teardown() end.
+
+force_skips_validation_without_dir_test() ->
+    setup_pg(undefined, false),
+    try
+        %% Config without 'dir' key — version validation is skipped
+        ok = erlang_migrate:force(#{conn => test_conn}, 999)
     after teardown() end.
 
 %%% ── drop/1 ───────────────────────────────────────────────────────────────
@@ -267,8 +289,99 @@ logger_error_on_lock_timeout_test() ->
         ?assert(lists:any(fun({L, _}) -> L =:= error end, Logs))
     after teardown() end.
 
+logger_structured_fun3_test() ->
+    setup_pg(undefined, false), setup_source(migrations_3()),
+    try
+        Self = self(),
+        %% 3-arg logger receives (Level, Meta, Msg) where Meta is a map
+        Logger = fun(Level, Meta, Msg) -> Self ! {log3, Level, Meta, Msg} end,
+        ok = erlang_migrate:up(maps:put(logger, Logger, config())),
+        Logs = collect_logs3([]),
+        %% Some logs should carry metadata maps
+        ?assert(length(Logs) >= 1),
+        ?assert(lists:any(fun({_, M, _}) -> is_map(M) end, Logs))
+    after teardown() end.
+
+%%% ── GracefulStop ─────────────────────────────────────────────────────────
+
+graceful_stop_aborts_between_migrations_test() ->
+    setup_pg(undefined, false), setup_source(migrations_3()),
+    try
+        ExecCalls = counters:new(1, []),
+        %% After first exec_sql, inject the abort signal into our own mailbox.
+        %% apply_up checks the mailbox before starting each migration, so the
+        %% abort is caught before migration #2 begins.
+        meck:expect(erlang_migrate_pg, exec_sql, fun(_, _) ->
+            Count = counters:get(ExecCalls, 1),
+            counters:add(ExecCalls, 1, 1),
+            if Count =:= 0 -> self() ! erlang_migrate_abort;
+               true        -> ok
+            end,
+            ok
+        end),
+        ?assertMatch({error, aborted}, erlang_migrate:up(config())),
+        ?assertEqual(1, counters:get(ExecCalls, 1))
+    after teardown() end.
+
+%%% ── dry_run mode ─────────────────────────────────────────────────────────
+
+dry_run_does_not_exec_sql_test() ->
+    setup_pg(undefined, false), setup_source(migrations_3()),
+    try
+        ok = erlang_migrate:up(maps:put(dry_run, true, config())),
+        %% In dry_run mode, exec_sql and set_version must NOT be called
+        ?assertEqual(0, meck:num_calls(erlang_migrate_pg, exec_sql, '_')),
+        ?assertEqual(0, meck:num_calls(erlang_migrate_pg, set_version, '_'))
+    after teardown() end.
+
+dry_run_logs_would_apply_test() ->
+    setup_pg(undefined, false), setup_source(migrations_3()),
+    try
+        Self = self(),
+        Logger = fun(Level, Msg) -> Self ! {log, Level, Msg} end,
+        ok = erlang_migrate:up(maps:merge(config(), #{dry_run => true, logger => Logger})),
+        Logs = collect_logs([]),
+        ?assert(lists:any(fun({_, Msg}) ->
+            is_binary(Msg) andalso binary:match(Msg, <<"dry-run">>) =/= nomatch
+        end, Logs))
+    after teardown() end.
+
+%%% ── set_version retry ────────────────────────────────────────────────────
+
+set_version_clear_dirty_retried_on_failure_test() ->
+    setup_pg(undefined, false), setup_source(migrations_3()),
+    try
+        %% First set_version(true) call succeeds, exec_sql succeeds,
+        %% but set_version(false) fails once then succeeds on retry.
+        CallCount = counters:new(1, []),
+        meck:expect(erlang_migrate_pg, set_version, fun(_, _, _, Dirty) ->
+            case Dirty of
+                true  -> ok;
+                false ->
+                    Count = counters:get(CallCount, 1),
+                    counters:add(CallCount, 1, 1),
+                    if Count =:= 0 -> {error, transient_error};
+                       true -> ok
+                    end
+            end
+        end),
+        %% Run only 1 migration to simplify
+        ok = erlang_migrate:up(config(), 1),
+        %% Should have been called at least twice for the false case
+        FalseCalls = counters:get(CallCount, 1),
+        ?assert(FalseCalls >= 2)
+    after teardown() end.
+
+%%% ── Helpers ──────────────────────────────────────────────────────────────
+
 collect_logs(Acc) ->
     receive
         {log, Level, Msg} -> collect_logs([{Level, Msg} | Acc])
+    after 0 -> lists:reverse(Acc)
+    end.
+
+collect_logs3(Acc) ->
+    receive
+        {log3, Level, Meta, Msg} -> collect_logs3([{Level, Meta, Msg} | Acc])
     after 0 -> lists:reverse(Acc)
     end.
