@@ -380,4 +380,4 @@ driver(#{driver := D}) when is_atom(D) ->
 driver(#{driver := D}) -> error({invalid_driver, D});
 driver(_)              -> erlang_migrate_pg.
 
-fmt(Fmt, Args) -> iolist_to_binary(io_lib:format(Fmt, Args)).
+fmt(Fmt, Args) -> unicode:characters_to_binary(io_lib:format(Fmt, Args)).
