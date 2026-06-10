@@ -48,6 +48,15 @@ parse_title_test() ->
     <<"create_users">> = maps:get(title, M),
     clean_dir(Dir).
 
+utf8_title_test() ->
+    Dir = mk_tmp_dir(),
+    Name = unicode:characters_to_list("20240101120000_用户表.up.sql"),
+    write_file(Dir, Name, "SELECT 1"),
+    {ok, [M]} = erlang_migrate_source:scan(Dir),
+    20240101120000 = maps:get(version, M),
+    <<"用户表"/utf8>> = maps:get(title, M),
+    clean_dir(Dir).
+
 %%% Helpers
 mk_tmp_dir() ->
     Dir = "/tmp/erlang_migrate_test_" ++ integer_to_list(erlang:unique_integer([positive])),

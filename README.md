@@ -99,6 +99,7 @@ Migrations are plain `.sql` files. No ORM, no DSL, no code generation. The SQL y
 |-------------|---------------------|
 | Multi-statement supported / 支持多语句 | `epgsql:squery` executes the full file / `epgsql:squery` 直接执行整个文件 |
 | No explicit transaction needed / 无需显式事务 | Each migration runs in its own auto-transaction / 每个迁移在自身事务中运行 |
+| ⚠️ MySQL DDL atomicity / MySQL DDL 原子性 | MySQL implicitly commits before each DDL — a multi-statement file failing midway is NOT fully rolled back (PG is). Prefer one DDL per file on MySQL. / MySQL 在每条 DDL 前隐式提交，多语句文件中途失败**不会**整体回滚（PG 可以）；MySQL 下建议一文件一 DDL |
 | DDL and DML both allowed / DDL 和 DML 均可 | `CREATE TABLE`, `INSERT`, `ALTER`, etc. / 均支持 |
 | Empty file allowed / 允许空文件 | Acts as a no-op version marker / 作为无操作版本标记 |
 | Comments allowed / 允许注释 | Standard SQL `--` and `/* */` / 标准 SQL 注释均可 |
@@ -228,6 +229,7 @@ ok = erlang_migrate:drop(Config).
 | `down(Config)` | `Down()` | Roll back all applied migrations / 回滚所有已应用迁移 |
 | `down(Config, N)` | `Steps(-N)` | Roll back N migrations / 回滚 N 个迁移 |
 | `goto(Config, Version)` | `Migrate(version)` | Migrate to exact version (auto up/down) / 迁移到指定版本（自动判断方向） |
+| `create(Dir, Title)` | `create` (CLI) | Generate `{utc_timestamp}_{title}.up/.down.sql` pair / 生成时间戳迁移文件对 |
 | `force(Config, Version)` | `Force(version)` | Force set version, clears dirty flag / 强制设置版本，清除 dirty 标志 |
 | `version(Config)` | `Version()` | Return `{ok, Version, Dirty}` / 返回版本和 dirty 状态 |
 | `drop(Config)` | `Drop()` *(partial)* | Drop `schema_migrations` table / 删除 schema_migrations 表 |
@@ -254,6 +256,57 @@ ok = erlang_migrate:drop(Config).
 | `lock_id` | no / 否 | `erlang:phash2(Table)` | Advisory lock ID (auto-derived) / 锁 ID（自动派生）|
 | `lock_timeout` | no / 否 | `15000` | Lock wait timeout in ms / 获锁等待超时毫秒数 |
 | `logger` | no / 否 | `undefined` | `fun(Level, Msg) -> ok` callback / 日志回调函数 |
+| `strict` | no / 否 | `false` | Out-of-order detection via `<table>_history` / 乱序迁移检测，见下方"Strict Mode" |
+
+---
+
+## Strict Mode / 严格模式（乱序迁移检测）
+
+With timestamp versions and multiple developers, a migration merged late (its
+timestamp is lower than the already-applied current version) is **silently
+skipped forever** under golang-migrate semantics. `strict => true` closes this
+gap:
+
+时间戳版本号 + 多人开发时，后合并的迁移（时间戳小于当前已应用版本）在
+golang-migrate 语义下会被**永久静默跳过**。`strict => true` 修复此问题：
+
+- Every applied migration is also recorded in a `<table>_history` table
+  (one row per version). / 每个已应用迁移同时记录到 `<table>_history` 表（每版本一行）。
+- `up/1,2` fails with `{error, {out_of_order, Versions}}` when a file version
+  `=<` current was never applied. / 当存在版本号 `=<` 当前版本但从未应用的文件时，
+  `up/1,2` 返回 `{error, {out_of_order, Versions}}`。
+- First strict run on an existing install backfills the history (assumes all
+  versions `=<` current were applied). / 已有环境首次启用时自动回填历史
+  （假定 `=<` 当前版本的迁移均已应用）。
+- `force/2` rebuilds the history; `drop/1` also drops it; `dry_run` bypasses
+  strict bookkeeping. / `force/2` 重建历史表；`drop/1` 一并删除；`dry_run` 跳过 strict。
+
+Recovery for an out-of-order file: re-timestamp it to a fresh version
+(recommended), or apply it manually and run `force/2`.
+乱序文件的处理：重新生成新时间戳（推荐），或手动应用后执行 `force/2`。
+
+Requires a driver exporting `applied_versions/2` — the bundled PG / MySQL /
+SQLite drivers all do. / 需要驱动导出 `applied_versions/2`（自带三驱动均已实现）。
+
+---
+
+## Creating Migrations / 创建迁移文件
+
+```erlang
+%% In-app / 程序内
+{ok, Up, Down} = erlang_migrate:create("priv/migrations", "add_user_index").
+%% -> priv/migrations/20260610120000_add_user_index.up.sql / .down.sql
+```
+
+```bash
+# CLI (no DB drivers needed / 无需数据库驱动)
+rebar3 escriptize
+_build/default/bin/erlang_migrate_cli new add_user_index priv/migrations
+```
+
+Versions are UTC timestamps (`YYYYMMDDHHMMSS`), so concurrent developers get
+non-overlapping versions by construction; same-second collisions bump +1.
+版本号为 UTC 时间戳，多人并行开发天然不重叠；同秒冲突自动 +1。
 
 ---
 
@@ -379,7 +432,7 @@ Add `epgsql` to your own `deps`. `erlang_migrate` has **zero hard dependencies**
 
 ```erlang
 {deps, [
-    {erlang_migrate, "0.2.1"},
+    {erlang_migrate, "0.3.0"},
     {epgsql, "4.8.0"}
 ]}.
 ```
@@ -397,7 +450,7 @@ Add `mysql` to your own `deps`, then set `driver => erlang_migrate_mysql` in Con
 
 ```erlang
 {deps, [
-    {erlang_migrate, "0.2.1"},
+    {erlang_migrate, "0.3.0"},
     {mysql, "1.8.0"}           %% add mysql driver yourself / 自行添加驱动依赖
 ]}.
 ```
@@ -417,7 +470,7 @@ Add `esqlite` to your own `deps`, then set `driver => erlang_migrate_sqlite` in 
 
 ```erlang
 {deps, [
-    {erlang_migrate, "0.2.1"},
+    {erlang_migrate, "0.3.0"},
     {esqlite, "0.8.1"}         %% add esqlite driver yourself / 自行添加驱动依赖
 ]}.
 ```
@@ -432,7 +485,7 @@ ok = erlang_migrate:up(Config).
 
 ```erlang
 {deps, [
-    {erlang_migrate, {git, "https://github.com/imboy-pub/erlang_migrate.git", {tag, "v0.2.1"}}}
+    {erlang_migrate, {git, "https://github.com/imboy-pub/erlang_migrate.git", {tag, "v0.3.0"}}}
 ]}.
 ```
 

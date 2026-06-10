@@ -372,6 +372,71 @@ set_version_clear_dirty_retried_on_failure_test() ->
         ?assert(FalseCalls >= 2)
     after teardown() end.
 
+%%% ── strict mode ──────────────────────────────────────────────────────────
+
+sconfig() -> maps:put(strict, true, config()).
+
+strict_up_detects_out_of_order_test() ->
+    setup_pg(3, false), setup_source(migrations_3()),
+    meck:expect(erlang_migrate_pg, applied_versions, fun(_, _) -> {ok, [1, 3]} end),
+    try
+        %% Version 2 exists as a file, is =< current(3) but was never applied.
+        ?assertEqual({error, {out_of_order, [2]}}, erlang_migrate:up(sconfig())),
+        ?assertEqual(0, meck:num_calls(erlang_migrate_pg, set_version, '_'))
+    after teardown() end.
+
+strict_backfills_empty_history_test() ->
+    setup_pg(2, false), setup_source(migrations_3()),
+    meck:expect(erlang_migrate_pg, applied_versions, fun(_, _) -> {ok, []} end),
+    try
+        ok = erlang_migrate:up(sconfig()),
+        %% exec_sql: ensure_history + backfill(1,2) + migration v3 + record v3 = 4
+        ?assertEqual(4, meck:num_calls(erlang_migrate_pg, exec_sql, '_')),
+        ?assertEqual(2, meck:num_calls(erlang_migrate_pg, set_version, '_'))
+    after teardown() end.
+
+strict_records_each_applied_migration_test() ->
+    setup_pg(undefined, false), setup_source(migrations_3()),
+    meck:expect(erlang_migrate_pg, applied_versions, fun(_, _) -> {ok, []} end),
+    try
+        ok = erlang_migrate:up(sconfig()),
+        %% exec_sql: ensure_history + 3 x (migration sql + history insert) = 7
+        ?assertEqual(7, meck:num_calls(erlang_migrate_pg, exec_sql, '_'))
+    after teardown() end.
+
+strict_unsupported_driver_test() ->
+    %% applied_versions/2 NOT mocked -> function_exported = false
+    setup_pg(undefined, false), setup_source(migrations_3()),
+    try
+        ?assertMatch({error, {strict_not_supported, _}}, erlang_migrate:up(sconfig()))
+    after teardown() end.
+
+strict_down_deletes_history_row_test() ->
+    setup_pg(3, false), setup_source(migrations_3()),
+    meck:expect(erlang_migrate_pg, applied_versions, fun(_, _) -> {ok, [1, 2, 3]} end),
+    try
+        ok = erlang_migrate:down(sconfig(), 1),
+        %% exec_sql: ensure_history + down sql + history delete = 3
+        ?assertEqual(3, meck:num_calls(erlang_migrate_pg, exec_sql, '_'))
+    after teardown() end.
+
+strict_force_rebuilds_history_test() ->
+    setup_pg(3, false), setup_source(migrations_3()),
+    try
+        ok = erlang_migrate:force(sconfig(), 2),
+        %% exec_sql: ensure_history + DELETE all + INSERT (1,2) = 3
+        ?assertEqual(3, meck:num_calls(erlang_migrate_pg, exec_sql, '_')),
+        ?assertEqual(1, meck:num_calls(erlang_migrate_pg, set_version, '_'))
+    after teardown() end.
+
+strict_dry_run_bypasses_history_test() ->
+    setup_pg(undefined, false), setup_source(migrations_3()),
+    try
+        %% No applied_versions mock needed: dry_run skips strict entirely.
+        ok = erlang_migrate:up(maps:put(dry_run, true, sconfig())),
+        ?assertEqual(0, meck:num_calls(erlang_migrate_pg, exec_sql, '_'))
+    after teardown() end.
+
 %%% ── Helpers ──────────────────────────────────────────────────────────────
 
 collect_logs(Acc) ->

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-10
+
+### Added
+
+- **Strict mode** (`strict => true`): records every applied migration in a `<table>_history` table and fails `up/1,2` with `{error, {out_of_order, Versions}}` when a file version `=<` current was never applied — closes the silent-skip gap of timestamp versioning with multiple developers. First run backfills history; `force/2` rebuilds it; `drop/1` drops it; `dry_run` bypasses it.
+- New optional driver callback `applied_versions/2`; implemented in the PG, MySQL and SQLite drivers.
+- `create/2`: generate a `{utc_timestamp}_{title}.up/.down.sql` pair (UTC `YYYYMMDDHHMMSS` version, +1 bump on same-second collision, UTF-8 titles supported).
+- CLI escript `erlang_migrate_cli` (`rebar3 escriptize`): `new <title> [dir]` — file generation only, keeping the zero-dependency design.
+
+### Fixed
+
+- UTF-8: `erlang_migrate_source` crashed (`badarg`) on non-Latin1 migration titles (`list_to_binary` → `unicode:characters_to_binary`); core log lines used `~s` instead of `~ts`, mojibaking UTF-8 titles.
+
 ## [0.2.3] - 2026-06-06
 
 ### Fixed

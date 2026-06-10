@@ -34,3 +34,11 @@
 %% Drop the schema_migrations tracking table.
 -callback drop_table(Conn :: term(), Table :: binary()) ->
     ok | {error, term()}.
+
+%% Optional — required only for strict mode (out-of-order detection).
+%% Return every version recorded in the history table HistTable.
+%% The history table itself is created and maintained by the core via exec_sql.
+-callback applied_versions(Conn :: term(), HistTable :: binary()) ->
+    {ok, [integer()]} | {error, term()}.
+
+-optional_callbacks([applied_versions/2]).

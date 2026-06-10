@@ -24,9 +24,20 @@
 %%
 %% == dry_run mode ==
 %% Set `dry_run => true' in Config to log what would be applied without
-%% touching the database.
+%% touching the database. dry_run also bypasses strict-mode bookkeeping.
+%%
+%% == strict mode (out-of-order detection) ==
+%% Set `strict => true' to record every applied migration in a
+%% "<table>_history" table (one row per version). up/1,2 then fails with
+%% {error, {out_of_order, Versions}} if a file's version is =< current but
+%% was never applied — e.g. a timestamp-versioned migration merged late from
+%% another branch, which would otherwise be silently skipped forever.
+%% Recovery: re-timestamp the late file to a fresh version, or run force/2
+%% to rebuild the history after applying it manually.
+%% Requires a driver exporting applied_versions/2 (pg/mysql/sqlite all do).
 -module(erlang_migrate).
--export([up/1, up/2, down/1, down/2, goto/2, version/1, force/2, drop/1]).
+-export([up/1, up/2, down/1, down/2, goto/2, version/1, force/2, drop/1,
+         create/2]).
 
 -define(DEFAULT_TABLE,              <<"schema_migrations">>).
 -define(DEFAULT_LOCK_TIMEOUT,       15000).  %% milliseconds
@@ -49,8 +60,12 @@ up(Config, Steps) ->
                 case erlang_migrate_source:scan(dir(Config)) of
                     {error, _} = E -> E;
                     {ok, All} ->
-                        Pending = pending_up(All, Current, Steps),
-                        apply_up(Driver, Conn, Table, Pending, Logger, DryRun, Config)
+                        case strict_prepare(Config, Driver, Conn, Table, Current, All, enforce) of
+                            {error, _} = E -> E;
+                            ok ->
+                                Pending = pending_up(All, Current, Steps),
+                                apply_up(Driver, Conn, Table, Pending, Logger, DryRun, Config)
+                        end
                 end
         end
     end).
@@ -74,8 +89,12 @@ down(Config, Steps) when Steps =:= all orelse (is_integer(Steps) andalso Steps >
                         case erlang_migrate_source:scan(dir(Config)) of
                             {error, _} = E -> E;
                             {ok, All} ->
-                                ToRollback = pending_down(All, Current, Steps),
-                                apply_down(Driver, Conn, Table, ToRollback, Logger, DryRun, Config)
+                                case strict_prepare(Config, Driver, Conn, Table, Current, All, init) of
+                                    {error, _} = E -> E;
+                                    ok ->
+                                        ToRollback = pending_down(All, Current, Steps),
+                                        apply_down(Driver, Conn, Table, ToRollback, Logger, DryRun, Config)
+                                end
                         end
                 end
         end
@@ -93,22 +112,26 @@ goto(Config, Version) ->
                 case erlang_migrate_source:scan(dir(Config)) of
                     {error, _} = E -> E;
                     {ok, All} ->
-                        CurV = case Current of undefined -> 0; V -> V end,
-                        %% Fix #15: use dropwhile/takewhile for O(range) traversal
-                        %% instead of full-list comprehension with two maps:get per element.
-                        if
-                            Version > CurV ->
-                                Pending = lists:takewhile(
-                                    fun(M) -> maps:get(version, M) =< Version end,
-                                    lists:dropwhile(fun(M) -> maps:get(version, M) =< CurV end, All)),
-                                apply_up(Driver, Conn, Table, Pending, Logger, DryRun, Config);
-                            Version < CurV ->
-                                Range = lists:takewhile(
-                                    fun(M) -> maps:get(version, M) =< CurV end,
-                                    lists:dropwhile(fun(M) -> maps:get(version, M) =< Version end, All)),
-                                apply_down(Driver, Conn, Table, lists:reverse(Range), Logger, DryRun, Config);
-                            true ->
-                                ok
+                        case strict_prepare(Config, Driver, Conn, Table, Current, All, init) of
+                            {error, _} = SE -> SE;
+                            ok ->
+                                CurV = case Current of undefined -> 0; V -> V end,
+                                %% Fix #15: use dropwhile/takewhile for O(range) traversal
+                                %% instead of full-list comprehension with two maps:get per element.
+                                if
+                                    Version > CurV ->
+                                        Pending = lists:takewhile(
+                                            fun(M) -> maps:get(version, M) =< Version end,
+                                            lists:dropwhile(fun(M) -> maps:get(version, M) =< CurV end, All)),
+                                        apply_up(Driver, Conn, Table, Pending, Logger, DryRun, Config);
+                                    Version < CurV ->
+                                        Range = lists:takewhile(
+                                            fun(M) -> maps:get(version, M) =< CurV end,
+                                            lists:dropwhile(fun(M) -> maps:get(version, M) =< Version end, All)),
+                                        apply_down(Driver, Conn, Table, lists:reverse(Range), Logger, DryRun, Config);
+                                    true ->
+                                        ok
+                                end
                         end
                 end
         end
@@ -142,7 +165,11 @@ force(Config, Version) ->
         ok ->
             case validate_force_version(Config, Version) of
                 {error, _} = E -> E;
-                ok -> Driver:set_version(Conn, Table, Version, false)
+                ok ->
+                    case Driver:set_version(Conn, Table, Version, false) of
+                        ok -> strict_rebuild(Config, Driver, Conn, Table, Version);
+                        {error, _} = E -> E
+                    end
             end
     end.
 
@@ -169,9 +196,70 @@ drop(Config) ->
     Conn   = conn(Config),
     Table  = table(Config),
     Driver = driver(Config),
-    Driver:drop_table(Conn, Table).
+    case strict(Config) of
+        false -> Driver:drop_table(Conn, Table);
+        true ->
+            case Driver:exec_sql(Conn, iolist_to_binary(
+                     ["DROP TABLE IF EXISTS ", hist_table(Table)])) of
+                ok             -> Driver:drop_table(Conn, Table);
+                {error, _} = E -> E
+            end
+    end.
+
+%% Generate a timestamped migration pair: {YYYYMMDDHHMMSS}_{Title}.up.sql/.down.sql.
+%% Version is the current UTC time, so concurrent developers on different
+%% machines get non-overlapping versions by construction. On a same-second
+%% collision the version is bumped +1 until free.
+-spec create(Dir :: file:filename(), Title :: iodata()) ->
+    {ok, file:filename(), file:filename()} | {error, term()}.
+create(Dir, Title0) ->
+    case normalize_title(Title0) of
+        {error, _} = E -> E;
+        {ok, Title} ->
+            case filelib:ensure_dir(filename:join(Dir, "any")) of
+                {error, R} -> {error, {mkdir_failed, R}};
+                ok ->
+                    Version  = free_version(Dir, utc_version()),
+                    Base     = integer_to_list(Version) ++ "_" ++ Title,
+                    UpPath   = filename:join(Dir, Base ++ ".up.sql"),
+                    DownPath = filename:join(Dir, Base ++ ".down.sql"),
+                    case file:write_file(UpPath, sql_template(Base, "up")) of
+                        {error, R} -> {error, {write_failed, UpPath, R}};
+                        ok ->
+                            case file:write_file(DownPath, sql_template(Base, "down")) of
+                                {error, R} -> {error, {write_failed, DownPath, R}};
+                                ok -> {ok, UpPath, DownPath}
+                            end
+                    end
+            end
+    end.
 
 %%% Internal helpers
+
+normalize_title(Title0) ->
+    Title = unicode:characters_to_list(Title0),
+    IsBad = fun(C) -> C =:= $/ orelse C =:= $\\ orelse C =:= 0 end,
+    case is_list(Title) andalso Title =/= [] andalso not lists:any(IsBad, Title) of
+        true  -> {ok, Title};
+        false -> {error, {invalid_title, Title0}}
+    end.
+
+utc_version() ->
+    {{Y, Mo, D}, {H, Mi, S}} = calendar:universal_time(),
+    (((Y * 100 + Mo) * 100 + D) * 100 + H) * 10000 + Mi * 100 + S.
+
+%% Bump +1 until no existing file claims the version. A bumped value may not
+%% be a real clock time (e.g. second 60) — only uniqueness and ordering matter.
+free_version(Dir, V) ->
+    case filelib:wildcard(filename:join(Dir, integer_to_list(V) ++ "_*.sql")) of
+        [] -> V;
+        _  -> free_version(Dir, V + 1)
+    end.
+
+sql_template(Base, Direction) ->
+    unicode:characters_to_binary(
+        ["-- ", Base, " (", Direction, ")\n",
+         "-- Add ", Direction, " migration SQL here.\n"]).
 
 with_lock(Config, Fun) ->
     Conn    = conn(Config),
@@ -233,7 +321,7 @@ apply_up(Driver, Conn, Table, [M | Rest], Logger, DryRun, Config) ->
         ok ->
             Version = maps:get(version, M),
             log(Logger, info, #{version => Version, title => maps:get(title, M)},
-                fmt("applying up ~b ~s", [Version, maps:get(title, M)])),
+                fmt("applying up ~b ~ts", [Version, maps:get(title, M)])),
             case run_one_up(Driver, Conn, Table, Version, maps:get(up_file, M),
                             Logger, DryRun, Config) of
                 ok ->
@@ -263,10 +351,13 @@ run_one_up(Driver, Conn, Table, Version, UpFile, Logger, DryRun, Config) ->
                                 E;
                             ok ->
                                 %% Fix #2: retry set_version(false) on transient failures
-                                set_version_with_retry(Driver, Conn, Table, Version, false,
-                                                       set_version_retries(Config),
-                                                       set_version_retry_ms(Config),
-                                                       Logger)
+                                case set_version_with_retry(Driver, Conn, Table, Version, false,
+                                                            set_version_retries(Config),
+                                                            set_version_retry_ms(Config),
+                                                            Logger) of
+                                    ok -> strict_record_up(Config, Driver, Conn, Table, Version);
+                                    {error, _} = E -> E
+                                end
                         end
                 end
             end
@@ -283,7 +374,7 @@ apply_down(Driver, Conn, Table, [M | Rest], Logger, DryRun, Config) ->
                 undefined -> {error, {no_down_migration, Version}};
                 _ ->
                     log(Logger, info, #{version => Version, title => maps:get(title, M)},
-                        fmt("applying down ~b ~s", [Version, maps:get(title, M)])),
+                        fmt("applying down ~b ~ts", [Version, maps:get(title, M)])),
                     PrevVersion = case Rest of
                         []         -> undefined;
                         [Next | _] -> maps:get(version, Next)
@@ -316,10 +407,13 @@ run_one_down(Driver, Conn, Table, Version, PrevVersion, DownFile, Logger, DryRun
                                     fmt("failed down ~b — dirty state set", [Version])),
                                 E;
                             ok ->
-                                set_version_with_retry(Driver, Conn, Table, PrevVersion, false,
-                                                       set_version_retries(Config),
-                                                       set_version_retry_ms(Config),
-                                                       Logger)
+                                case set_version_with_retry(Driver, Conn, Table, PrevVersion, false,
+                                                            set_version_retries(Config),
+                                                            set_version_retry_ms(Config),
+                                                            Logger) of
+                                    ok -> strict_record_down(Config, Driver, Conn, Table, Version);
+                                    {error, _} = E -> E
+                                end
                         end
                 end
             end
@@ -381,3 +475,123 @@ driver(#{driver := D}) -> error({invalid_driver, D});
 driver(_)              -> erlang_migrate_pg.
 
 fmt(Fmt, Args) -> unicode:characters_to_binary(io_lib:format(Fmt, Args)).
+
+%%% Strict mode (out-of-order detection)
+%%
+%% With strict => true, every applied migration is also recorded in
+%% "<table>_history" (one row per version). strict_prepare/7 in `enforce'
+%% mode (up only) fails when a file version =< current is absent from that
+%% history; `init' mode (down/goto) just ensures and backfills the table.
+
+strict(#{strict := true}) -> true;
+strict(_)                 -> false.
+
+strict_prepare(Config, Driver, Conn, Table, Current, All, Mode) ->
+    case strict(Config) andalso not dry_run(Config) of
+        false -> ok;
+        true ->
+            case erlang:function_exported(Driver, applied_versions, 2) of
+                false -> {error, {strict_not_supported, Driver}};
+                true  -> strict_prepare2(Driver, Conn, Table, Current, All, Mode)
+            end
+    end.
+
+strict_prepare2(Driver, Conn, Table, Current, All, Mode) ->
+    Hist = hist_table(Table),
+    case ensure_history(Driver, Conn, Hist) of
+        {error, _} = E -> E;
+        ok ->
+            case Driver:applied_versions(Conn, Hist) of
+                {error, _} = E -> E;
+                {ok, []} when Current =/= undefined ->
+                    %% First strict run on an existing install: assume every
+                    %% version =< current was applied and backfill the history.
+                    Versions = [maps:get(version, M) || M <- All,
+                                maps:get(version, M) =< Current],
+                    insert_history(Driver, Conn, Hist, Versions);
+                {ok, Applied} ->
+                    case Mode of
+                        init    -> ok;
+                        enforce -> check_out_of_order(Applied, Current, All)
+                    end
+            end
+    end.
+
+ensure_history(Driver, Conn, Hist) ->
+    %% Portable across PG / MySQL / SQLite.
+    Driver:exec_sql(Conn, iolist_to_binary([
+        "CREATE TABLE IF NOT EXISTS ", Hist, " (",
+        "  version    BIGINT PRIMARY KEY,",
+        "  applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        ")"
+    ])).
+
+insert_history(_Driver, _Conn, _Hist, []) -> ok;
+insert_history(Driver, Conn, Hist, Versions) ->
+    Values = lists:join(",", [["(", integer_to_binary(V), ")"] || V <- Versions]),
+    Driver:exec_sql(Conn, iolist_to_binary(
+        ["INSERT INTO ", Hist, " (version) VALUES ", Values])).
+
+check_out_of_order(_Applied, undefined, _All) -> ok;
+check_out_of_order(Applied, Current, All) ->
+    Missing = [V || M <- All,
+                    V <- [maps:get(version, M)],
+                    V =< Current,
+                    not lists:member(V, Applied)],
+    case Missing of
+        [] -> ok;
+        _  -> {error, {out_of_order, Missing}}
+    end.
+
+%% A history write failing after the migration itself succeeded surfaces as an
+%% error; recovery is force/2, which rebuilds the history from source files.
+strict_record_up(Config, Driver, Conn, Table, Version) ->
+    case strict(Config) of
+        false -> ok;
+        true  -> insert_history(Driver, Conn, hist_table(Table), [Version])
+    end.
+
+strict_record_down(Config, Driver, Conn, Table, Version) ->
+    case strict(Config) of
+        false -> ok;
+        true ->
+            Driver:exec_sql(Conn, iolist_to_binary(
+                ["DELETE FROM ", hist_table(Table),
+                 " WHERE version = ", integer_to_binary(Version)]))
+    end.
+
+%% force/2 rebuilds the history to "all file versions =< Version".
+strict_rebuild(Config, Driver, Conn, Table, Version) ->
+    case strict(Config) andalso maps:is_key(dir, Config) of
+        false -> ok;
+        true ->
+            Hist = hist_table(Table),
+            case ensure_history(Driver, Conn, Hist) of
+                {error, _} = E -> E;
+                ok ->
+                    case Driver:exec_sql(Conn, iolist_to_binary(["DELETE FROM ", Hist])) of
+                        {error, _} = E -> E;
+                        ok when Version =:= undefined -> ok;
+                        ok ->
+                            case erlang_migrate_source:scan(dir(Config)) of
+                                {error, _} = E -> E;
+                                {ok, All} ->
+                                    Versions = [maps:get(version, M) || M <- All,
+                                                maps:get(version, M) =< Version],
+                                    insert_history(Driver, Conn, Hist, Versions)
+                            end
+                    end
+            end
+    end.
+
+hist_table(Table) ->
+    Bin = case Table of
+        B when is_binary(B) -> B;
+        L when is_list(L)   -> unicode:characters_to_binary(L)
+    end,
+    Hist = <<Bin/binary, "_history">>,
+    case re:run(Hist, "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)?$",
+                [{capture, none}]) of
+        match   -> Hist;
+        nomatch -> error({invalid_table_name, Hist})
+    end.

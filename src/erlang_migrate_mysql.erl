@@ -3,7 +3,8 @@
 -module(erlang_migrate_mysql).
 -behaviour(erlang_migrate_driver).
 -export([ensure_table/2, current_version/2, lock/2, lock/3, unlock/2,
-         set_version/4, is_dirty/2, exec_sql/2, drop_table/2]).
+         set_version/4, is_dirty/2, exec_sql/2, drop_table/2,
+         applied_versions/2]).
 
 -define(LOCK_RETRY_MS, 100).
 
@@ -121,6 +122,15 @@ drop_table(Conn, Table) ->
     case mysql:query(Conn, SQL) of
         ok  -> ok;
         Err -> {error, {drop_failed, Err}}
+    end.
+
+%% List versions recorded in the strict-mode history table (created by core).
+applied_versions(Conn, HistTable) ->
+    SQL = iolist_to_binary(["SELECT version FROM ", table_ref(HistTable),
+                            " ORDER BY version"]),
+    case mysql:query(Conn, SQL) of
+        {ok, _Cols, Rows} -> {ok, [V || [V] <- Rows]};
+        Err               -> {error, {query_failed, Err}}
     end.
 
 %%% Internal

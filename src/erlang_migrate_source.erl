@@ -55,7 +55,7 @@ parse_version_title(Base) ->
     case string:split(Base, "_", leading) of
         [VerStr, Rest] ->
             case string:to_integer(VerStr) of
-                {V, []} when V > 0 -> {V, list_to_binary(Rest)};
+                {V, []} when V > 0 -> {V, unicode:characters_to_binary(Rest)};
                 _ -> {error, bad_version}
             end;
         _ -> {error, bad_format}

@@ -4,7 +4,7 @@
 -behaviour(erlang_migrate_driver).
 -export([ensure_table/2, current_version/2, lock/2, lock/3, unlock/2,
          set_version/4, is_dirty/2, drop_table/2,
-         exec_sql/2]).
+         exec_sql/2, applied_versions/2]).
 
 -define(LOCK_RETRY_MS, 100).
 
@@ -130,6 +130,15 @@ exec_sql(Conn, SQL) when is_binary(SQL) ->
     with_pg_transaction(Conn, fun() ->
         run_sql(Conn, binary_to_list(SQL))
     end).
+
+%% List versions recorded in the strict-mode history table (created by core).
+applied_versions(Conn, HistTable) ->
+    SQL = iolist_to_binary(["SELECT version FROM ", table_ref(HistTable),
+                            " ORDER BY version"]),
+    case epgsql:squery(Conn, SQL) of
+        {ok, _, Rows} -> {ok, [binary_to_integer(V) || {V} <- Rows]};
+        Err           -> {error, {query_failed, Err}}
+    end.
 
 %%% Internal
 
