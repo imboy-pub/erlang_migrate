@@ -28,10 +28,10 @@
 %%
 %% == strict mode (out-of-order detection) ==
 %% Set `strict => true' to record every applied migration in a
-%% "<table>_history" table (one row per version). up/1,2 then fails with
-%% {error, {out_of_order, Versions}} if a file's version is =< current but
-%% was never applied — e.g. a timestamp-versioned migration merged late from
-%% another branch, which would otherwise be silently skipped forever.
+%% `Table_history' table (one row per version). up/1,2 then fails with
+%% `{error, {out_of_order, Versions}}' if a file's version is at or below
+%% current but was never applied — e.g. a timestamp-versioned migration merged
+%% late from another branch, which would otherwise be silently skipped forever.
 %% Recovery: re-timestamp the late file to a fresh version, or run force/2
 %% to rebuild the history after applying it manually.
 %% Requires a driver exporting applied_versions/2 (pg/mysql/sqlite all do).

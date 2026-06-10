@@ -432,7 +432,7 @@ Add `epgsql` to your own `deps`. `erlang_migrate` has **zero hard dependencies**
 
 ```erlang
 {deps, [
-    {erlang_migrate, "0.3.0"},
+    {erlang_migrate, "0.3.1"},
     {epgsql, "4.8.0"}
 ]}.
 ```
@@ -450,7 +450,7 @@ Add `mysql` to your own `deps`, then set `driver => erlang_migrate_mysql` in Con
 
 ```erlang
 {deps, [
-    {erlang_migrate, "0.3.0"},
+    {erlang_migrate, "0.3.1"},
     {mysql, "1.8.0"}           %% add mysql driver yourself / 自行添加驱动依赖
 ]}.
 ```
@@ -470,7 +470,7 @@ Add `esqlite` to your own `deps`, then set `driver => erlang_migrate_sqlite` in 
 
 ```erlang
 {deps, [
-    {erlang_migrate, "0.3.0"},
+    {erlang_migrate, "0.3.1"},
     {esqlite, "0.8.1"}         %% add esqlite driver yourself / 自行添加驱动依赖
 ]}.
 ```
@@ -485,7 +485,7 @@ ok = erlang_migrate:up(Config).
 
 ```erlang
 {deps, [
-    {erlang_migrate, {git, "https://github.com/imboy-pub/erlang_migrate.git", {tag, "v0.3.0"}}}
+    {erlang_migrate, {git, "https://github.com/imboy-pub/erlang_migrate.git", {tag, "v0.3.1"}}}
 ]}.
 ```
 
