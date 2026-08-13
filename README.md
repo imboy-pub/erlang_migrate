@@ -253,9 +253,12 @@ ok = erlang_migrate:drop(Config).
 | `dir` | yes / 是 | — | Path to migration files / 迁移文件目录路径 |
 | `driver` | no / 否 | `erlang_migrate_pg` | Driver module / 驱动模块，见下方驱动说明 |
 | `table` | no / 否 | `<<"schema_migrations">>` | Tracking table name / 迁移状态表名 |
-| `lock_id` | no / 否 | `erlang:phash2(Table)` | Advisory lock ID (auto-derived) / 锁 ID（自动派生）|
+| `lock_id` | no / 否 | `erlang:phash2(Table, 1 bsl 30)` | Advisory lock ID (auto-derived) / 锁 ID（自动派生）|
 | `lock_timeout` | no / 否 | `15000` | Lock wait timeout in ms / 获锁等待超时毫秒数 |
-| `logger` | no / 否 | `undefined` | `fun(Level, Msg) -> ok` callback / 日志回调函数 |
+| `logger` | no / 否 | `undefined` | `fun(Level, Msg)` 或 `fun(Level, Meta, Msg)` callback / 日志回调函数 |
+| `dry_run` | no / 否 | `false` | Log what would be applied without touching the DB / 只记录不执行，跳过 strict 记账 |
+| `set_version_retries` | no / 否 | `3` | Retries for `set_version` on contention / 版本写入重试次数 |
+| `set_version_retry_ms` | no / 否 | `200` | Retry delay in ms / 版本写入重试延迟毫秒数 |
 | `strict` | no / 否 | `false` | Out-of-order detection via `<table>_history` / 乱序迁移检测，见下方"Strict Mode" |
 
 ---
@@ -372,10 +375,10 @@ Recovery steps / 恢复步骤：
 
 ## Concurrency Safety / 并发安全
 
-`erlang_migrate` uses `pg_advisory_lock` — equivalent to golang-migrate's database-layer advisory lock.
+`erlang_migrate` uses `pg_try_advisory_lock` — equivalent to golang-migrate's database-layer advisory lock.
 Safe for multi-node Erlang clusters. Only one node executes migrations at a time.
 
-`erlang_migrate` 使用 `pg_advisory_lock`，等价于 golang-migrate 的数据库层 advisory lock。
+`erlang_migrate` 使用 `pg_try_advisory_lock`，等价于 golang-migrate 的数据库层 advisory lock。
 对多节点 Erlang 集群安全。同一时刻只有一个节点执行迁移。
 
 Lock timeout is configurable via `lock_timeout` in Config (default `15000`ms, matching golang-migrate).
@@ -409,13 +412,13 @@ Config = #{
 | `force` version | ✅ `Force(v)` | ✅ `force/2` | ✅ Done |
 | `version` + dirty | ✅ `Version()` | ✅ `version/1` → `{ok, V, Dirty}` | ✅ Done |
 | `drop` state table | ✅ all tables | ✅ state table only | ⚠️ Partial |
-| Advisory lock | ✅ | ✅ `pg_advisory_lock` | ✅ Done |
+| Advisory lock | ✅ | ✅ `pg_try_advisory_lock` | ✅ Done |
 | Dirty state machine | ✅ | ✅ | ✅ Done |
 | Migration history | ❌ single-row | ❌ single-row + `applied_at` | ✅ Done |
 | Lock timeout | ✅ 15s | ✅ `lock_timeout` ms (default 15s) | ✅ Done |
-| GracefulStop | ✅ channel | ❌ | 🔲 Planned |
-| Logger interface | ✅ pluggable | ✅ optional `logger` fun/2 in Config | ✅ Done |
-| CLI tooling | ✅ | ❌ library only | 🔲 Future |
+| GracefulStop | ✅ channel | ✅ `erlang_migrate_abort` signal | ✅ Done |
+| Logger interface | ✅ pluggable | ✅ optional `logger` fun/2 or fun/3 in Config | ✅ Done |
+| CLI tooling | ✅ | ✅ `erlang_migrate_cli` (file gen only) | ✅ Done |
 | Source abstraction | ✅ 15+ sources | filesystem only | 🔲 Future |
 | Multi-database | ✅ 15+ | PostgreSQL / MySQL / SQLite | ✅ Done |
 | Integration tests | ✅ Docker | 🔲 planned | 🔲 Planned |
