@@ -108,6 +108,46 @@ down_n_steps_test() ->
         ?assertEqual(4, meck:num_calls(erlang_migrate_pg, set_version, '_'))
     after teardown() end.
 
+%% ── partial-down-tracking：down(N) 不得清空升级历史 ──────────────────────
+%% 回滚 N<all 份后，跟踪表必须停在 ToRollback 之前最近的已应用版本
+%% （此前实现滚完 sublist 即 PrevVersion=undefined → PG driver 清空全表，
+%% 后续 up() 从第一版重放并撞非幂等 DDL）。
+
+set_versions_applied() ->
+    Hist = [V || {_Pid, {erlang_migrate_pg, set_version, [_C, _Tb, V, _D]}, _Ret}
+                     <- meck:history(erlang_migrate_pg)],
+    PrevCalls = [V || V <- Hist, is_integer(V)],
+    Undef     = [V || V <- Hist, V =:= undefined],
+    {PrevCalls, Undef}.
+
+down_partial_keeps_base_version_test() ->
+    setup_pg(3, false), setup_source(migrations_3()),
+    try
+        ok = erlang_migrate:down(config(), 2),
+        {PrevCalls, UndefCalls} = set_versions_applied(),
+        ?assertEqual([], UndefCalls),
+        %% 回滚 3、2 之后，最终 tracking 落点必须是 1
+        ?assertEqual(1, lists:last(PrevCalls))
+    after teardown() end.
+
+down_one_step_stops_at_two_test() ->
+    setup_pg(3, false), setup_source(migrations_3()),
+    try
+        ok = erlang_migrate:down(config(), 1),
+        {PrevCalls, UndefCalls} = set_versions_applied(),
+        ?assertEqual([], UndefCalls),
+        ?assertEqual(2, lists:last(PrevCalls))
+    after teardown() end.
+
+down_all_still_clears_tracking_test() ->
+    setup_pg(3, false), setup_source(migrations_3()),
+    try
+        ok = erlang_migrate:down(config()),
+        %% all=真回滚到空库：保留既有清空语义（最后一次 set_version 用 undefined）
+        {_PrevCalls, UndefCalls} = set_versions_applied(),
+        ?assertNotEqual([], UndefCalls)
+    after teardown() end.
+
 down_one_step_test() ->
     setup_pg(2, false), setup_source(migrations_3()),
     try

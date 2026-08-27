@@ -93,7 +93,8 @@ down(Config, Steps) when Steps =:= all orelse (is_integer(Steps) andalso Steps >
                                     {error, _} = E -> E;
                                     ok ->
                                         ToRollback = pending_down(All, Current, Steps),
-                                        apply_down(Driver, Conn, Table, ToRollback, Logger, DryRun, Config)
+                                        apply_down(base_version_for(All, ToRollback),
+                                            Driver, Conn, Table, ToRollback, Logger, DryRun, Config)
                                 end
                         end
                 end
@@ -128,7 +129,8 @@ goto(Config, Version) ->
                                         Range = lists:takewhile(
                                             fun(M) -> maps:get(version, M) =< CurV end,
                                             lists:dropwhile(fun(M) -> maps:get(version, M) =< Version end, All)),
-                                        apply_down(Driver, Conn, Table, lists:reverse(Range), Logger, DryRun, Config);
+                                        apply_down(base_version_for(All, lists:reverse(Range)),
+                                            Driver, Conn, Table, lists:reverse(Range), Logger, DryRun, Config);
                                     true ->
                                         ok
                                 end
@@ -363,8 +365,27 @@ run_one_up(Driver, Conn, Table, Version, UpFile, Logger, DryRun, Config) ->
             end
     end.
 
-apply_down(_Driver, _Conn, _Table, [], _Logger, _DryRun, _Config) -> ok;
-apply_down(Driver, Conn, Table, [M | Rest], Logger, DryRun, Config) ->
+%% partial-down-tracking：ToRollback 之外、紧邻其前的已应用迁移版本。
+%% 此前 PrevVersion 从 Rest 内部推导——down(N) 滚完 N 份后 Rest 耗尽即 undefined，
+%% driver 按约定清空整条升级历史，后续 up() 从第一版重放。
+%% 正确语义：停在 ToRollback 之前的最近已应用版本；仅真回滚到空库才清空。
+base_version_for(_All, []) ->
+    undefined;
+base_version_for(All, ToRollback) ->
+    Lowest = lists:min([maps:get(version, M) || M <- ToRollback]),
+    Below  = [maps:get(version, M) || M <- All, maps:get(version, M) < Lowest],
+    case Below of
+        []     -> undefined;
+        Vers   -> lists:max(Vers)
+    end.
+
+apply_down(BaseVersion, Driver, Conn, Table, [], _Logger, _DryRun, _Config) -> ok;
+%% BaseVersion：ToRollback 之外、紧邻其前的已应用迁移版本。
+%% 修复（partial-down-tracking）：此前 PrevVersion 从 Rest 内部推导，
+%% down(N) 滚完 N 份后 Rest 耗尽 → undefined → 清空整条升级历史，
+%% 后续 up() 便从 00000001 重放。正确语义是停在 BaseVersion；
+%% 仅当真的回滚到空库（BaseVersion=undefined）才清空跟踪表。
+apply_down(BaseVersion, Driver, Conn, Table, [M | Rest], Logger, DryRun, Config) ->
     case check_abort() of
         {error, aborted} -> {error, aborted};
         ok ->
@@ -376,14 +397,14 @@ apply_down(Driver, Conn, Table, [M | Rest], Logger, DryRun, Config) ->
                     log(Logger, info, #{version => Version, title => maps:get(title, M)},
                         fmt("applying down ~b ~ts", [Version, maps:get(title, M)])),
                     PrevVersion = case Rest of
-                        []         -> undefined;
+                        []         -> BaseVersion;
                         [Next | _] -> maps:get(version, Next)
                     end,
                     case run_one_down(Driver, Conn, Table, Version, PrevVersion, DownFile,
                                      Logger, DryRun, Config) of
                         ok ->
                             log(Logger, info, #{version => Version}, fmt("applied down ~b", [Version])),
-                            apply_down(Driver, Conn, Table, Rest, Logger, DryRun, Config);
+                            apply_down(BaseVersion, Driver, Conn, Table, Rest, Logger, DryRun, Config);
                         {error, _} = E -> E
                     end
             end
