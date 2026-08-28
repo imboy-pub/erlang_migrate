@@ -503,6 +503,60 @@ rebar3 eunit
 
 ---
 
+## Publishing to Hex / 发布到 Hex
+
+`rebar3_hex` is configured as a project plugin. Release a version from a clean
+working tree only; never store a Hex API key in this repository.
+
+项目已配置 `rebar3_hex` 插件。只在工作区干净时发布；不要把 Hex API Key 写入仓库或提交。
+
+1. Bump `{vsn, "x.y.z"}` in `src/erlang_migrate.app.src`, add the release notes
+   to `CHANGELOG.md`, then run the full test suite.
+
+   ```bash
+   rebar3 eunit
+   rebar3 hex build
+   ```
+
+2. On a machine that has not been authenticated with Hex, run the interactive
+   user setup command. It stores credentials in the local rebar3 configuration,
+   not in this repository.
+
+   ```bash
+   rebar3 hex user
+   ```
+
+3. Generate and inspect the package without publishing it.
+
+   ```bash
+   rebar3 hex publish --dry-run
+   ```
+
+4. Publish interactively, confirm the package metadata and documentation, then
+   create and push the matching Git tag.
+
+   ```bash
+   rebar3 hex publish
+   git tag -a vX.Y.Z -m "erlang_migrate X.Y.Z"
+   git push github main vX.Y.Z
+   git push origin main vX.Y.Z
+   ```
+
+5. Verify the released package is discoverable and installable.
+
+   ```bash
+   rebar3 hex search erlang_migrate
+   ```
+
+Hex public releases are immutable in normal use: publish a new version for a
+fix instead of using `--replace`. Use `rebar3 hex publish --yes` only in a
+reviewed CI release job with an externally managed credential.
+
+Hex 的公开版本通常应视为不可变：修复请发布新版本，不要使用 `--replace`。只有在
+凭证由外部安全管理、且已审核的 CI 发布任务中，才使用 `rebar3 hex publish --yes`。
+
+---
+
 ## License / 许可证
 
 Apache 2.0 — see [LICENSE](LICENSE)
