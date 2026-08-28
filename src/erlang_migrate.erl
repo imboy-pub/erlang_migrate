@@ -379,7 +379,7 @@ base_version_for(All, ToRollback) ->
         Vers   -> lists:max(Vers)
     end.
 
-apply_down(BaseVersion, Driver, Conn, Table, [], _Logger, _DryRun, _Config) -> ok;
+apply_down(_BaseVersion, _Driver, _Conn, _Table, [], _Logger, _DryRun, _Config) -> ok;
 %% BaseVersion：ToRollback 之外、紧邻其前的已应用迁移版本。
 %% 修复（partial-down-tracking）：此前 PrevVersion 从 Rest 内部推导，
 %% down(N) 滚完 N 份后 Rest 耗尽 → undefined → 清空整条升级历史，
