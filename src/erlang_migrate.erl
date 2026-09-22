@@ -35,6 +35,14 @@
 %% Recovery: re-timestamp the late file to a fresh version, or run force/2
 %% to rebuild the history after applying it manually.
 %% Requires a driver exporting applied_versions/2 (pg/mysql/sqlite all do).
+%%
+%% The first strict run on an existing install (history empty, current version
+%% set) backfills the history by ASSUMING every file version =< current was
+%% applied. If some of those files were never actually executed, they get
+%% marked applied forever. Set `strict_bootstrap => fail' to refuse that
+%% guess: up/1,2 then returns `{error, {strict_bootstrap_needed, Current}}'
+%% and recovery is an explicit force/2 (rebuild history) or a deliberate
+%% `strict_bootstrap => backfill' run.
 -module(erlang_migrate).
 -export([up/1, up/2, down/1, down/2, goto/2, version/1, force/2, drop/1,
          create/2]).
@@ -212,7 +220,7 @@ drop(Config) ->
 %% Version is the current UTC time, so concurrent developers on different
 %% machines get non-overlapping versions by construction. On a same-second
 %% collision the version is bumped +1 until free.
--spec create(Dir :: file:filename(), Title :: iodata()) ->
+-spec create(Dir :: file:filename(), Title :: unicode:chardata()) ->
     {ok, file:filename(), file:filename()} | {error, term()}.
 create(Dir, Title0) ->
     case normalize_title(Title0) of
@@ -507,17 +515,36 @@ fmt(Fmt, Args) -> unicode:characters_to_binary(io_lib:format(Fmt, Args)).
 strict(#{strict := true}) -> true;
 strict(_)                 -> false.
 
+%% strict_bootstrap controls the first strict run on an existing install
+%% (history empty, current version set):
+%%   backfill (default) — assume every file version =< current was applied;
+%%                       compatible with legacy installs, but never-executed
+%%                       late-merged files get marked applied.
+%%   fail               — refuse the guess; recover by running force/2
+%%                       (explicit rebuild) or by opting into backfill.
+strict_bootstrap(#{strict_bootstrap := fail})     -> fail;
+strict_bootstrap(#{strict_bootstrap := backfill}) -> backfill;
+strict_bootstrap(#{strict_bootstrap := Value})    ->
+    {error, {invalid_strict_bootstrap, Value}};
+strict_bootstrap(_)                              -> backfill.
+
 strict_prepare(Config, Driver, Conn, Table, Current, All, Mode) ->
     case strict(Config) andalso not dry_run(Config) of
         false -> ok;
         true ->
             case erlang:function_exported(Driver, applied_versions, 2) of
                 false -> {error, {strict_not_supported, Driver}};
-                true  -> strict_prepare2(Driver, Conn, Table, Current, All, Mode)
+                true  ->
+                    case strict_bootstrap(Config) of
+                        {error, _} = E -> E;
+                        Bootstrap ->
+                            strict_prepare2(Bootstrap, Driver, Conn, Table,
+                                            Current, All, Mode)
+                    end
             end
     end.
 
-strict_prepare2(Driver, Conn, Table, Current, All, Mode) ->
+strict_prepare2(Bootstrap, Driver, Conn, Table, Current, All, Mode) ->
     Hist = hist_table(Table),
     case ensure_history(Driver, Conn, Hist) of
         {error, _} = E -> E;
@@ -525,11 +552,20 @@ strict_prepare2(Driver, Conn, Table, Current, All, Mode) ->
             case Driver:applied_versions(Conn, Hist) of
                 {error, _} = E -> E;
                 {ok, []} when Current =/= undefined ->
-                    %% First strict run on an existing install: assume every
-                    %% version =< current was applied and backfill the history.
-                    Versions = [maps:get(version, M) || M <- All,
-                                maps:get(version, M) =< Current],
-                    insert_history(Driver, Conn, Hist, Versions);
+                    %% First strict run on an existing install. The default
+                    %% (`backfill') assumes every version =< current was applied
+                    %% and records it — but if some lower-versioned files were
+                    %% merged late and never executed, they are marked applied
+                    %% forever. `strict_bootstrap => fail' refuses this guess
+                    %% and asks for an explicit force/2 (or backfill opt-in).
+                    case Bootstrap of
+                        backfill ->
+                            Versions = [maps:get(version, M) || M <- All,
+                                        maps:get(version, M) =< Current],
+                            insert_history(Driver, Conn, Hist, Versions);
+                        fail ->
+                            {error, {strict_bootstrap_needed, Current}}
+                    end;
                 {ok, Applied} ->
                     case Mode of
                         init    -> ok;

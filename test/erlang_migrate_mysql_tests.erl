@@ -156,6 +156,51 @@ exec_sql_rollback_on_failure_test() ->
         ?assertNot(meck:called(mysql, query, [?CONN, <<"COMMIT">>]))
     after teardown() end.
 
+exec_sql_commit_failure_propagates_test() ->
+    meck:new(mysql, [no_link, non_strict]),
+    meck:expect(mysql, query, fun(_, SQL) ->
+        case SQL of
+            <<"BEGIN">>    -> ok;
+            <<"COMMIT">>   -> {error, <<"simulated commit failure">>};
+            <<"ROLLBACK">> -> ok;
+            _              -> ok
+        end
+    end),
+    try
+        ?assertMatch({error, {commit_failed, _}},
+                     erlang_migrate_mysql:exec_sql(?CONN, <<"CREATE TABLE t (id int)">>))
+    after teardown() end.
+
+exec_sql_multi_statement_with_result_sets_is_ok_test() ->
+    meck:new(mysql, [no_link, non_strict]),
+    meck:expect(mysql, query, fun(_, SQL) ->
+        case SQL of
+            <<"BEGIN">>  -> ok;
+            <<"COMMIT">> -> ok;
+            %% mysql-otp returns {ok, [ResultSets]} for multi-statement text
+            %% where some statement returns rows.
+            _            -> {ok, [{[id], [[1]]}]}
+        end
+    end),
+    try
+        ?assertEqual(ok, erlang_migrate_mysql:exec_sql(
+                           ?CONN, <<"INSERT INTO t VALUES (1); SELECT id FROM t;">>))
+    after teardown() end.
+
+exec_sql_single_result_set_is_ok_test() ->
+    meck:new(mysql, [no_link, non_strict]),
+    meck:expect(mysql, query, fun(_, SQL) ->
+        case SQL of
+            <<"BEGIN">>  -> ok;
+            <<"COMMIT">> -> ok;
+            %% mysql-otp returns {ok, Columns, Rows} for one result set.
+            _            -> {ok, [<<"id">>], [[1]]}
+        end
+    end),
+    try
+        ?assertEqual(ok, erlang_migrate_mysql:exec_sql(?CONN, <<"SELECT 1">>))
+    after teardown() end.
+
 %%% ── validate_table_name (schema.table support) ──────────────────────────────
 
 validate_table_name_schema_qualified_test() ->

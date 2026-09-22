@@ -276,6 +276,40 @@ dirty_blocks_goto_test() ->
         ?assertEqual(0, meck:num_calls(erlang_migrate_pg, set_version, '_'))
     after teardown() end.
 
+%%% ── failure paths leave dirty=true ────────────────────────────────────────
+
+failed_sql_leaves_dirty_test() ->
+    setup_pg(undefined, false), setup_source(migrations_3()),
+    meck:expect(erlang_migrate_pg, exec_sql, fun(_, _) ->
+        {error, {sql_exec_failed, <<"boom">>}}
+    end),
+    try
+        ?assertMatch({error, _}, erlang_migrate:up(config())),
+        %% Only the dirty=true marker was written; no clean (dirty=false) write.
+        DirtyWrites = [D || {_Pid, {erlang_migrate_pg, set_version, [_C, _T, _V, D]}, _R}
+                                 <- meck:history(erlang_migrate_pg)],
+        ?assertEqual([true], DirtyWrites)
+    after teardown() end.
+
+failed_clean_marker_leaves_dirty_test() ->
+    setup_pg(undefined, false), setup_source(migrations_3()),
+    %% Migration SQL succeeds, but every set_version(false) attempt fails:
+    %% retries must be exhausted, the error surfaced, and dirty=true left.
+    CallCount = counters:new(1, []),
+    meck:expect(erlang_migrate_pg, set_version, fun(_, _, _, Dirty) ->
+        case Dirty of
+            true  -> ok;
+            false ->
+                counters:add(CallCount, 1, 1),
+                {error, connection_gone}
+        end
+    end),
+    try
+        ?assertMatch({error, connection_gone}, erlang_migrate:up(config(), 1)),
+        %% default set_version_retries=3 → 1 initial + 3 retries = 4 attempts
+        ?assertEqual(4, counters:get(CallCount, 1))
+    after teardown() end.
+
 %%% ── lock timeout ─────────────────────────────────────────────────────────
 
 lock_timeout_propagated_test() ->
@@ -475,6 +509,63 @@ strict_dry_run_bypasses_history_test() ->
         %% No applied_versions mock needed: dry_run skips strict entirely.
         ok = erlang_migrate:up(maps:put(dry_run, true, sconfig())),
         ?assertEqual(0, meck:num_calls(erlang_migrate_pg, exec_sql, '_'))
+    after teardown() end.
+
+%%% ── strict_bootstrap ──────────────────────────────────────────────────────
+%% 首次 strict 启用（历史空 + 已有版本）默认回填：把 <=current 的文件全部记为
+%% 已应用——若其中有从未执行的文件会被永久盲标。strict_bootstrap => fail 拒绝
+%% 该猜测，要求显式 force/2 重建或显式 backfill。
+
+strict_bootstrap_fail_refuses_backfill_test() ->
+    setup_pg(2, false), setup_source(migrations_3()),
+    meck:expect(erlang_migrate_pg, applied_versions, fun(_, _) -> {ok, []} end),
+    try
+        Cfg = maps:put(strict_bootstrap, fail, sconfig()),
+        ?assertEqual({error, {strict_bootstrap_needed, 2}}, erlang_migrate:up(Cfg)),
+        %% No migration and no history backfill may run.
+        ?assertEqual(0, meck:num_calls(erlang_migrate_pg, set_version, '_')),
+        BackfillCalls = [SQL || {_, {erlang_migrate_pg, exec_sql, [_, SQL]}, _}
+                                    <- meck:history(erlang_migrate_pg),
+                                is_list(SQL) orelse is_binary(SQL),
+                                binary:match(iolist_to_binary(SQL),
+                                             <<"INSERT INTO">>) =/= nomatch],
+        ?assertEqual([], BackfillCalls)
+    after teardown() end.
+
+strict_bootstrap_invalid_value_is_rejected_test() ->
+    setup_pg(2, false), setup_source(migrations_3()),
+    meck:expect(erlang_migrate_pg, applied_versions, fun(_, _) -> {ok, []} end),
+    try
+        Cfg = maps:put(strict_bootstrap, typo, sconfig()),
+        ?assertEqual({error, {invalid_strict_bootstrap, typo}},
+                     erlang_migrate:up(Cfg)),
+        ?assertEqual(0, meck:num_calls(erlang_migrate_pg, set_version, '_'))
+    after teardown() end.
+
+strict_bootstrap_fail_allows_explicit_backfill_test() ->
+    setup_pg(2, false), setup_source(migrations_3()),
+    meck:expect(erlang_migrate_pg, applied_versions, fun(_, _) -> {ok, []} end),
+    try
+        %% Explicit opt-in keeps the legacy-compatible behaviour.
+        ok = erlang_migrate:up(maps:put(strict_bootstrap, backfill, sconfig())),
+        ?assertEqual(2, meck:num_calls(erlang_migrate_pg, set_version, '_'))
+    after teardown() end.
+
+strict_bootstrap_fail_on_fresh_install_still_works_test() ->
+    setup_pg(undefined, false), setup_source(migrations_3()),
+    meck:expect(erlang_migrate_pg, applied_versions, fun(_, _) -> {ok, []} end),
+    try
+        %% Current=undefined -> no backfill guess involved; fail mode is inert.
+        ok = erlang_migrate:up(maps:put(strict_bootstrap, fail, sconfig())),
+        ?assertEqual(6, meck:num_calls(erlang_migrate_pg, set_version, '_'))
+    after teardown() end.
+
+strict_bootstrap_fail_recovery_via_force_test() ->
+    setup_pg(2, true), setup_source(migrations_3()),
+    try
+        %% Documented recovery: force/2 rebuilds history explicitly.
+        ok = erlang_migrate:force(maps:put(strict_bootstrap, fail, sconfig()), 2),
+        ?assertEqual(1, meck:num_calls(erlang_migrate_pg, set_version, '_'))
     after teardown() end.
 
 %%% ── Helpers ──────────────────────────────────────────────────────────────

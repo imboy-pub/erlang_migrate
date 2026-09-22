@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `erlang_migrate_source:scan/1` no longer **silently skips** `*.up.sql` files whose
+  `{version}_{title}` prefix fails to parse. A mistyped migration name now fails the
+  scan with `{error, {invalid_migration_filename, [{File, Reason}...]}}` instead of
+  the migration being invisibly never applied.
+- All three drivers now check the `COMMIT` result of the `set_version` and migration
+  transactions. A failed `COMMIT` (e.g. dropped connection) previously reported `ok`,
+  recording version state that was never persisted; it now surfaces as
+  `{error, {commit_failed, _}}` so the dirty protocol stays truthful.
+- MySQL `exec_sql/2`: row-returning statements use `{ok, Columns, Rows}` for one
+  result set or `{ok, ResultSets}` for multiple result sets in mysql-otp. Both were
+  previously treated as failures (false dirty state) and are now accepted as success.
+- `create/2` spec widened from `iodata()` to `unicode:chardata()` (UTF-8 titles are a
+  documented feature; codepoint lists were always accepted, the spec was too narrow).
+
+### Added
+
+- `strict_bootstrap => fail` config key. The first strict run on an existing install
+  backfills the history by *assuming* every file version `=<` current was applied —
+  late-merged never-executed files get marked applied **forever**. `fail` refuses the
+  guess with `{error, {strict_bootstrap_needed, Current}}`; recovery is an explicit
+  `force/2` or a deliberate `strict_bootstrap => backfill` run (default: `backfill`,
+  unchanged). An explicitly configured value other than `fail` or `backfill` is
+  rejected with `{error, {invalid_strict_bootstrap, Value}}` instead of failing open.
+
+### Tests
+
+- Real-database integration suites: SQLite (always-on in CI via a fresh EUnit VM,
+  avoiding NIF reload after meck; no server needed)
+  plus env-gated PostgreSQL (`EM_PG_*`) and MySQL (`EM_MYSQL_*`) suites covering
+  lifecycle, multi-statement/UTF-8 files, dirty-state recovery, cross-connection
+  lock contention, concurrent migration (exactly-once), strict/out-of-order and
+  `strict_bootstrap`. Disposable-container runner: `test/integration/run.sh`.
+
+### Build / Release
+
+- `rebar.lock` regenerated empty. The previously tracked stale lock (from the era
+  when drivers were hard deps, epgsql pinned 4.7.1) leaked into the Hex 0.3.2
+  package metadata as **non-optional requirements** on epgsql/mysql/esqlite,
+  contradicting the zero-runtime-dependency design. Publishing runbook now guards
+  the lock file before `rebar3 hex build`.
+
 ## [0.3.2] - 2026-08-28
 
 ### Fixed

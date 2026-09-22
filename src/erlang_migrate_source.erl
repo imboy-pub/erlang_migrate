@@ -9,17 +9,23 @@
 -export_type([migration/0]).
 
 %% Scan dir for migrations, return sorted ascending list.
+%% Any *.up.sql file whose {version}_{title} prefix does not parse is an
+%% error, not silently skipped — a mistyped migration name must never
+%% result in the migration being invisibly skipped.
 -spec scan(Dir :: file:filename()) -> {ok, [migration()]} | {error, term()}.
 scan(Dir) ->
     case file:list_dir(Dir) of
         {error, Reason} -> {error, {dir_not_found, Dir, Reason}};
         {ok, Files} ->
             UpFiles = [F || F <- Files, is_up_file(F)],
-            Migrations = lists:filtermap(fun(F) -> parse_up(Dir, F) end, UpFiles),
-            Sorted = lists:sort(fun(A, B) ->
-                maps:get(version, A) =< maps:get(version, B)
-            end, Migrations),
-            check_duplicates(Sorted)
+            case collect_migrations(Dir, UpFiles, [], []) of
+                {error, _} = E -> E;
+                {ok, Migrations} ->
+                    Sorted = lists:sort(fun(A, B) ->
+                        maps:get(version, A) =< maps:get(version, B)
+                    end, Migrations),
+                    check_duplicates(Sorted)
+            end
     end.
 
 %% Read SQL content from file.
@@ -38,7 +44,7 @@ is_up_file(F) -> lists:suffix(".up.sql", F).
 parse_up(Dir, UpFilename) ->
     Base = filename:rootname(filename:rootname(UpFilename)),  % strip .up.sql
     case parse_version_title(Base) of
-        {error, _} -> false;
+        {error, Reason} -> {error, UpFilename, Reason};
         {Version, Title} ->
             UpFile = filename:join(Dir, UpFilename),
             DownFilename = Base ++ ".down.sql",
@@ -47,8 +53,18 @@ parse_up(Dir, UpFilename) ->
                 true  -> DownFile;
                 false -> undefined
             end,
-            {true, #{version => Version, title => Title,
-                     up_file => UpFile, down_file => DownOrUndef}}
+            {ok, #{version => Version, title => Title,
+                   up_file => UpFile, down_file => DownOrUndef}}
+    end.
+
+collect_migrations(_Dir, [], Acc, []) ->
+    {ok, lists:reverse(Acc)};
+collect_migrations(_Dir, [], _Acc, Bad) ->
+    {error, {invalid_migration_filename, lists:sort(Bad)}};
+collect_migrations(Dir, [F | Rest], Acc, Bad) ->
+    case parse_up(Dir, F) of
+        {ok, M}         -> collect_migrations(Dir, Rest, [M | Acc], Bad);
+        {error, F, Rsn} -> collect_migrations(Dir, Rest, Acc, [{F, Rsn} | Bad])
     end.
 
 parse_version_title(Base) ->

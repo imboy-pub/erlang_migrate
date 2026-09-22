@@ -166,6 +166,22 @@ exec_sql_rollback_on_failure_test() ->
         ?assertNot(meck:called(esqlite3, exec, [?CONN, <<"COMMIT">>]))
     after teardown() end.
 
+exec_sql_commit_failure_propagates_test() ->
+    meck:new(esqlite3, [no_link, non_strict]),
+    meck:expect(esqlite3, exec, fun(_, SQL) ->
+        SQLBin = iolist_to_binary(SQL),
+        case SQLBin of
+            <<"BEGIN">>    -> ok;
+            <<"COMMIT">>   -> {error, <<"simulated commit failure">>};
+            <<"ROLLBACK">> -> ok;
+            _              -> ok
+        end
+    end),
+    try
+        ?assertMatch({error, {commit_failed, _}},
+                     erlang_migrate_sqlite:exec_sql(?CONN, <<"CREATE TABLE t (id int)">>))
+    after teardown() end.
+
 %%% ── validate_table_name (schema.table support) ──────────────────────────────
 
 validate_table_name_schema_qualified_test() ->

@@ -152,8 +152,14 @@ with_pg_transaction(Conn, Fun) ->
 run_transaction(Conn, Fun) ->
     case Fun() of
         ok ->
-            epgsql:squery(Conn, "COMMIT"),
-            ok;
+            %% A failed COMMIT means the whole transaction (migration SQL or
+            %% version write) was rolled back — reporting ok would record
+            %% state that does not exist.
+            case epgsql:squery(Conn, "COMMIT") of
+                {ok, _}    -> ok;
+                {ok, _, _} -> ok;
+                Err        -> {error, {commit_failed, Err}}
+            end;
         {error, _} = Err ->
             epgsql:squery(Conn, "ROLLBACK"),
             Err

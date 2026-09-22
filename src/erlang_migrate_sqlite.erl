@@ -138,8 +138,12 @@ with_sqlite_transaction(Conn, Fun) ->
         ok ->
             case Fun() of
                 ok ->
-                    esqlite3:exec(Conn, <<"COMMIT">>),
-                    ok;
+                    %% A failed COMMIT means the transaction was not persisted
+                    %% — reporting ok would record state that does not exist.
+                    case esqlite3:exec(Conn, <<"COMMIT">>) of
+                        ok   -> ok;
+                        Err2 -> {error, {commit_failed, Err2}}
+                    end;
                 {error, _} = Err ->
                     esqlite3:exec(Conn, <<"ROLLBACK">>),
                     Err

@@ -40,6 +40,43 @@ duplicate_versions_test() ->
     {error, duplicate_versions} = erlang_migrate_source:scan(Dir),
     clean_dir(Dir).
 
+%% Unparseable *.up.sql files must abort the scan with the offending
+%% filenames — never be silently skipped (a mistyped migration name would
+%% otherwise result in the migration being invisibly never applied).
+scan_rejects_nonnumeric_version_test() ->
+    Dir = mk_tmp_dir(),
+    write_file(Dir, "1_ok.up.sql", "SELECT 1"),
+    write_file(Dir, "abc_typo.up.sql", "SELECT 2"),
+    {error, {invalid_migration_filename, [{"abc_typo.up.sql", bad_version}]}} =
+        erlang_migrate_source:scan(Dir),
+    clean_dir(Dir).
+
+scan_rejects_zero_version_test() ->
+    Dir = mk_tmp_dir(),
+    write_file(Dir, "0_zero.up.sql", "SELECT 1"),
+    {error, {invalid_migration_filename, [{"0_zero.up.sql", bad_version}]}} =
+        erlang_migrate_source:scan(Dir),
+    clean_dir(Dir).
+
+scan_reports_all_bad_files_sorted_test() ->
+    Dir = mk_tmp_dir(),
+    write_file(Dir, "zzz_typo.up.sql", "SELECT 1"),
+    write_file(Dir, "aaa_typo.up.sql", "SELECT 1"),
+    {error, {invalid_migration_filename,
+             [{"aaa_typo.up.sql", bad_version},
+              {"zzz_typo.up.sql", bad_version}]}} =
+        erlang_migrate_source:scan(Dir),
+    clean_dir(Dir).
+
+%% A lone .down.sql without its .up.sql counterpart stays ignored.
+scan_ignores_orphan_down_file_test() ->
+    Dir = mk_tmp_dir(),
+    write_file(Dir, "1_ok.up.sql", "SELECT 1"),
+    write_file(Dir, "7_orphan.down.sql", "SELECT 9"),
+    {ok, [M]} = erlang_migrate_source:scan(Dir),
+    1 = maps:get(version, M),
+    clean_dir(Dir).
+
 parse_title_test() ->
     Dir = mk_tmp_dir(),
     write_file(Dir, "00000001_create_users.up.sql", "SELECT 1"),

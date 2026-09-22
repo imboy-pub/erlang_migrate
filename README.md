@@ -24,9 +24,10 @@ golang-migrate 将迁移**来源**（SQL 文件从哪里读）与迁移**目标*
 
 ### 2. Dirty State Machine / Dirty 状态机
 
-Every migration is executed in a **two-phase commit** pattern:
+Every migration is executed with a **mark → run → clear** protocol around the
+version bookkeeping:
 
-每个迁移以**两阶段提交**模式执行：
+每个迁移以**标记 → 执行 → 清除**协议包裹版本记账：
 
 ```
 set_version(V, dirty=true)   ← mark as in-progress / 标记为执行中
@@ -69,9 +70,10 @@ Migrations are plain `.sql` files. No ORM, no DSL, no code generation. The SQL y
 | Up migration / 正向迁移 | `{version}_{title}.up.sql` | `00000001_create_users.up.sql` |
 | Down migration / 反向迁移 | `{version}_{title}.down.sql` | `00000001_create_users.down.sql` |
 | Version format / 版本格式 | Positive integer / 正整数 | `1`, `00000001`, `20240101120000` |
-| Title format / 标题格式 | `[a-z0-9_]+` | `create_users`, `add_email_index` |
+| Title format / 标题格式 | any filename-safe text; `[a-z0-9_]+` recommended (UTF-8 supported by `create/2`) / 任意文件名安全文本，推荐 `[a-z0-9_]+`（`create/2` 支持 UTF-8） | `create_users`, `用户表` |
 | Separator / 分隔符 | Underscore `_` between version and title | `00000001_create_users` |
 | Extension / 扩展名 | `.up.sql` or `.down.sql` | `.up.sql` |
+| Unparseable files / 无法解析的文件 | A `*.up.sql` whose `{version}_` prefix does not parse aborts the scan with `{error, {invalid_migration_filename, ...}}` — never silently skipped / 版本段无法解析的 `*.up.sql` 会使扫描报错，绝不静默跳过 | `abc_init.up.sql` → error |
 
 ### Version Rules / 版本号规则
 
@@ -88,17 +90,17 @@ Migrations are plain `.sql` files. No ORM, no DSL, no code generation. The SQL y
 | Rule / 规则 | Description / 说明 |
 |-------------|---------------------|
 | Flat directory / 平铺目录 | No subdirectories scanned / 不扫描子目录 |
-| Any filename is scanned / 扫描所有文件 | Only `.up.sql` and `.down.sql` are processed / 只处理 `.up.sql` 和 `.down.sql` |
-| `.up.sql` required / `.up.sql` 必须存在 | Every version must have an up file / 每个版本必须有 up 文件 |
+| `.up.sql` drives the scan / 以 `.up.sql` 为准 | Only `.up.sql` files are enumerated; a lone `.down.sql` without its `.up.sql` is ignored / 只枚举 `.up.sql`；无 up 对应的 `.down.sql` 会被忽略 |
+| Bad names are errors / 坏文件名即报错 | An `.up.sql` file whose version segment does not parse as a positive integer fails the whole scan — nothing is silently skipped / 版本段不是正整数的 `.up.sql` 会让整个扫描失败，不做静默跳过 |
 | `.down.sql` optional / `.down.sql` 可选 | If missing, `down/2` will error for that version / 缺少则 `down/2` 该版本会报错 |
-| Must be readable / 必须可读 | File permission errors abort the scan / 权限错误会中止扫描 |
+| Must be readable / 必须可读 | Unreadable directory aborts the scan / 目录不可读会中止扫描 |
 
 ### SQL Content Rules / SQL 内容规则
 
 | Rule / 规则 | Description / 说明 |
 |-------------|---------------------|
-| Multi-statement supported / 支持多语句 | `epgsql:squery` executes the full file / `epgsql:squery` 直接执行整个文件 |
-| No explicit transaction needed / 无需显式事务 | Each migration runs in its own auto-transaction / 每个迁移在自身事务中运行 |
+| Multi-statement supported / 支持多语句 | PG: `epgsql:squery` simple-query protocol; MySQL: mysql-otp enables `CLIENT_MULTI_STATEMENTS` by default; SQLite: `esqlite3:exec` runs full scripts / 三驱动均支持整文件多语句执行 |
+| No explicit transaction needed / 无需显式事务 | Each migration file is wrapped in its own `BEGIN`/`COMMIT` by the driver — do **not** put `BEGIN`/`COMMIT` inside the file (nested transaction error) / 驱动自动为整个文件包一层事务；文件内**不要**再写 `BEGIN`/`COMMIT`（会报嵌套事务错误） |
 | ⚠️ MySQL DDL atomicity / MySQL DDL 原子性 | MySQL implicitly commits before each DDL — a multi-statement file failing midway is NOT fully rolled back (PG is). Prefer one DDL per file on MySQL. / MySQL 在每条 DDL 前隐式提交，多语句文件中途失败**不会**整体回滚（PG 可以）；MySQL 下建议一文件一 DDL |
 | DDL and DML both allowed / DDL 和 DML 均可 | `CREATE TABLE`, `INSERT`, `ALTER`, etc. / 均支持 |
 | Empty file allowed / 允许空文件 | Acts as a no-op version marker / 作为无操作版本标记 |
@@ -260,6 +262,7 @@ ok = erlang_migrate:drop(Config).
 | `set_version_retries` | no / 否 | `3` | Retries for `set_version` on contention / 版本写入重试次数 |
 | `set_version_retry_ms` | no / 否 | `200` | Retry delay in ms / 版本写入重试延迟毫秒数 |
 | `strict` | no / 否 | `false` | Out-of-order detection via `<table>_history` / 乱序迁移检测，见下方"Strict Mode" |
+| `strict_bootstrap` | no / 否 | `backfill` | First strict run on an existing install: `backfill` (assume all `=<` current were applied) or `fail` (refuse the guess); any other explicit value returns `{error, {invalid_strict_bootstrap, Value}}` / 已有环境首次启用 strict 的回填策略；显式非法值直接报错 |
 
 ---
 
@@ -279,8 +282,21 @@ golang-migrate 语义下会被**永久静默跳过**。`strict => true` 修复�
   `=<` current was never applied. / 当存在版本号 `=<` 当前版本但从未应用的文件时，
   `up/1,2` 返回 `{error, {out_of_order, Versions}}`。
 - First strict run on an existing install backfills the history (assumes all
-  versions `=<` current were applied). / 已有环境首次启用时自动回填历史
-  （假定 `=<` 当前版本的迁移均已应用）。
+  versions `=<` current were applied). **Warning / 警告**: if any of those files
+  were actually never executed (e.g. merged late, lower timestamp), backfill
+  marks them applied **forever** and they will never run. Set
+  `strict_bootstrap => fail` to refuse this guess: the first run then returns
+  `{error, {strict_bootstrap_needed, Current}}` and recovery is an explicit
+  `force/2` (rebuilds history from source files — the same assumption, but
+  made deliberately) or a deliberate `strict_bootstrap => backfill` run.
+  Any other explicit `strict_bootstrap` value is rejected rather than falling
+  back to the unsafe assumption.
+  / 已有环境首次启用时自动回填历史（**假定** `=<` 当前版本的迁移均已应用）。
+  **警告**：若其中部分文件实际从未执行（如后合并的低时间戳迁移），回填会把它们
+  **永久**标记为已应用且永不执行。设置 `strict_bootstrap => fail` 可拒绝该猜测：
+  首次运行返回 `{error, {strict_bootstrap_needed, Current}}`，恢复方式为显式
+  `force/2`（同样是重建历史，但由你主动确认）或显式 `strict_bootstrap => backfill`。
+  其他显式值会直接报配置错误，不会退回到默认盲回填。
 - `force/2` rebuilds the history; `drop/1` also drops it; `dry_run` bypasses
   strict bookkeeping. / `force/2` 重建历史表；`drop/1` 一并删除；`dry_run` 跳过 strict。
 
@@ -375,17 +391,27 @@ Recovery steps / 恢复步骤：
 
 ## Concurrency Safety / 并发安全
 
-`erlang_migrate` uses `pg_try_advisory_lock` — equivalent to golang-migrate's database-layer advisory lock.
-Safe for multi-node Erlang clusters. Only one node executes migrations at a time.
+Migrations are serialised by a lock held for the whole `up`/`down`/`goto`
+run and always released in an `after` block. The lock mechanism — and its
+scope — differs per driver:
 
-`erlang_migrate` 使用 `pg_try_advisory_lock`，等价于 golang-migrate 的数据库层 advisory lock。
-对多节点 Erlang 集群安全。同一时刻只有一个节点执行迁移。
+迁移通过锁串行化，锁覆盖整个 `up`/`down`/`goto` 运行过程，并始终在 `after` 块中释放。
+锁机制与**作用范围**因驱动而异：
 
-Lock timeout is configurable via `lock_timeout` in Config (default `15000`ms, matching golang-migrate).
-Internally uses `pg_try_advisory_lock` + 100ms retry loop until deadline.
+| Driver | Mechanism / 机制 | Scope / 范围 |
+|--------|------------------|--------------|
+| PostgreSQL | `pg_try_advisory_lock` (session-level) + 100ms retry loop | ✅ Cross-process / cross-node — safe for multi-node Erlang clusters / 跨进程跨节点，多节点集群安全 |
+| MySQL | `GET_LOCK` / `RELEASE_LOCK` (named lock, per connection) + 100ms retry loop | ✅ Cross-process / cross-node / 跨进程跨节点 |
+| SQLite | OTP `global:set_lock` (single node list `[node()]`) | ⚠️ **Same Erlang VM only** — no cross-node/cross-VM mutual exclusion; concurrent migration from a second VM is not prevented (SQLite file locking only serialises individual writes) / **仅同一 Erlang 节点内互斥**，不提供跨节点/跨 VM 互斥（SQLite 文件锁只串行化底层单次写入） |
+
+Lock timeout is configurable via `lock_timeout` in Config (default `15000`ms,
+matching golang-migrate). Internally the PG/MySQL drivers use a try-lock +
+100ms retry loop until the deadline; a contending run fails with
+`{error, lock_timeout}` rather than blocking forever.
 
 锁超时通过 Config 中的 `lock_timeout` 配置（默认 `15000`ms，与 golang-migrate 一致）。
-内部使用 `pg_try_advisory_lock` + 100ms 重试循环直到超时。
+PG/MySQL 驱动内部使用 try-lock + 100ms 重试循环直到超时；竞争方以
+`{error, lock_timeout}` 失败退出，而非无限阻塞。
 
 ```erlang
 Config = #{
@@ -421,7 +447,7 @@ Config = #{
 | CLI tooling | ✅ | ✅ `erlang_migrate_cli` (file gen only) | ✅ Done |
 | Source abstraction | ✅ 15+ sources | filesystem only | 🔲 Future |
 | Multi-database | ✅ 15+ | PostgreSQL / MySQL / SQLite | ✅ Done |
-| Integration tests | ✅ Docker | 🔲 planned | 🔲 Planned |
+| Integration tests | ✅ Docker | ✅ real-DB suites (SQLite always-on; PostgreSQL/MySQL env-gated, `test/integration/run.sh`) | ✅ Done |
 
 ---
 
@@ -498,8 +524,26 @@ ok = erlang_migrate:up(Config).
 
 ```bash
 rebar3 compile
-rebar3 eunit
+rebar3 as test eunit            # unit + mock tests
+EM_SQLITE_IT=1 rebar3 as test eunit --module=erlang_migrate_sqlite_integration_it
+rebar3 as dev dialyzer          # src-only gate with real driver deps in the PLT
 ```
+
+Real-database integration suites (PostgreSQL / MySQL) are env-gated and skip
+silently when the variables are unset — `test/erlang_migrate_pg_integration_tests.erl`
+needs `EM_PG_HOST/EM_PG_USER/EM_PG_PASSWORD/EM_PG_DB` (+ optional `EM_PG_PORT`),
+`test/erlang_migrate_mysql_integration_tests.erl` needs `EM_MYSQL_HOST/EM_MYSQL_USER/EM_MYSQL_PASSWORD/EM_MYSQL_DB`
+(+ optional `EM_MYSQL_PORT`). The SQLite suite runs in a separate EUnit VM because
+the unit suite mocks the `esqlite3` NIF module; keeping the real-NIF suite isolated
+avoids unsafe NIF unload/reload in one VM. CI and `test/integration/run.sh` run both.
+To run everything against disposable containers:
+
+```bash
+sh test/integration/run.sh
+```
+
+真库集成套件（PostgreSQL / MySQL）按环境变量门控，未设置时静默跳过。
+完整跑一遍（含一次性容器）用 `sh test/integration/run.sh`。
 
 ---
 
@@ -514,11 +558,24 @@ working tree only; never store a Hex API key in this repository.
    to `CHANGELOG.md`, then run the full test suite.
 
    ```bash
-   rebar3 eunit
+   rebar3 as test eunit
+   EM_SQLITE_IT=1 rebar3 as test eunit --module=erlang_migrate_sqlite_integration_it
+   ```
+
+2. **Guard the lock file / 检查锁文件** — `rebar3_hex` derives the published
+   package's `requirements` from `rebar.lock`, so a lock carrying dependency
+   entries publishes them as hard requirements. This library must publish
+   with **zero** requirements; regenerate and verify before building:
+
+   ```bash
+   rm rebar.lock && rebar3 compile && cat rebar.lock   # must print [].
    rebar3 hex build
    ```
 
-2. On a machine that has not been authenticated with Hex, run the interactive
+   （`rebar3_hex` 从 `rebar.lock` 生成发布的 `requirements`；lock 里若有依赖条目
+   就会被发布成硬依赖。本库必须以**零** requirements 发布，构建前先重建并核对。）
+
+3. On a machine that has not been authenticated with Hex, run the interactive
    user setup command. It stores credentials in the local rebar3 configuration,
    not in this repository.
 
@@ -526,13 +583,13 @@ working tree only; never store a Hex API key in this repository.
    rebar3 hex user
    ```
 
-3. Generate and inspect the package without publishing it.
+4. Generate and inspect the package without publishing it.
 
    ```bash
    rebar3 hex publish --dry-run
    ```
 
-4. Publish interactively, confirm the package metadata and documentation, then
+5. Publish interactively, confirm the package metadata and documentation, then
    create and push the matching Git tag.
 
    ```bash
@@ -542,7 +599,7 @@ working tree only; never store a Hex API key in this repository.
    git push origin main vX.Y.Z
    ```
 
-5. Verify the released package is discoverable and installable.
+6. Verify the released package is discoverable and installable.
 
    ```bash
    rebar3 hex search erlang_migrate

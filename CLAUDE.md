@@ -122,7 +122,7 @@ priv/migrations/
 
 ```
 运行时依赖：无（零依赖）
-测试依赖：meck 0.9.2, epgsql 4.8.0, mysql 1.8.0, esqlite 0.8.1
+测试依赖：meck 1.2.0, epgsql 4.8.0, mysql 1.8.0, esqlite 0.8.1
 ```
 
 使用方在自己的 `rebar.config` 中按需添加驱动依赖（如仅用 PostgreSQL 只需添加 `epgsql`）。
@@ -142,19 +142,30 @@ priv/migrations/
 
 ```
 test/
-├── erlang_migrate_source_tests.erl   # source 模块单元测试
-├── erlang_migrate_tests.erl          # 核心流程测试
-├── erlang_migrate_create_tests.erl   # create/2 生成器测试
-├── erlang_migrate_pg_tests.erl       # PostgreSQL 驱动测试
-├── erlang_migrate_mysql_tests.erl    # MySQL 驱动测试
-└── erlang_migrate_sqlite_tests.erl   # SQLite 驱动测试
+├── erlang_migrate_source_tests.erl             # source 模块单元测试
+├── erlang_migrate_tests.erl                    # 核心流程测试
+├── erlang_migrate_create_tests.erl             # create/2 生成器测试
+├── erlang_migrate_pg_tests.erl                 # PostgreSQL 驱动测试（mock epgsql）
+├── erlang_migrate_mysql_tests.erl              # MySQL 驱动测试（mock mysql）
+├── erlang_migrate_sqlite_tests.erl             # SQLite 驱动测试（mock esqlite3）
+├── erlang_migrate_sqlite_integration_it.erl    # SQLite 真库集成（独立 EUnit VM）
+├── erlang_migrate_pg_integration_tests.erl     # PG 真库集成（EM_PG_* 环境变量门控）
+├── erlang_migrate_mysql_integration_tests.erl  # MySQL 真库集成（EM_MYSQL_* 门控）
+└── integration/                                # docker-compose + run.sh 一次性容器
 ```
 
 运行测试：
 ```bash
-rebar3 eunit
-rebar3 as test eunit   # 含测试依赖
+rebar3 as test eunit    # 单元 + mock 测试
+EM_SQLITE_IT=1 rebar3 as test eunit --module=erlang_migrate_sqlite_integration_it  # SQLite 真库，独立 VM
+EM_PG_USER=... rebar3 as test eunit   # 追加 PG/MySQL 真库集成（环境变量门控）
+sh test/integration/run.sh            # 一次性容器跑全套
+rebar3 as dev dialyzer                # 仅分析 src/，PLT 含真实驱动依赖
 ```
+
+⚠️ macOS 本地注意：rebar3/pc 插件链接 esqlite NIF 可能静默失败（priv/ 无 .so），
+需手动 `cc -dynamiclib` 链接 `_build/test/lib/esqlite/c_src/*.o` 至 priv/。
+不要把 mock `esqlite3` 的单测与真 NIF 集成测试放在同一 EUnit VM。
 
 ---
 

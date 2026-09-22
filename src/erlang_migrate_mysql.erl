@@ -111,8 +111,14 @@ is_dirty(Conn, Table) ->
 exec_sql(Conn, SQL) when is_binary(SQL) ->
     with_mysql_transaction(Conn, fun() ->
         case mysql:query(Conn, SQL) of
-            ok  -> ok;
-            Err -> {error, {sql_exec_failed, Err}}
+            ok         -> ok;
+            %% One result set is returned as {ok, Columns, Rows}.
+            {ok, _, _} -> ok;
+            %% Multi-statement files containing row-returning statements
+            %% (e.g. a SELECT) come back as {ok, ResultSets}, not ok —
+            %% that is a success, not a failure.
+            {ok, _}    -> ok;
+            Err        -> {error, {sql_exec_failed, Err}}
         end
     end).
 
@@ -140,8 +146,12 @@ with_mysql_transaction(Conn, Fun) ->
         ok ->
             case Fun() of
                 ok ->
-                    mysql:query(Conn, <<"COMMIT">>),
-                    ok;
+                    %% A failed COMMIT means the transaction was not persisted
+                    %% — reporting ok would record state that does not exist.
+                    case mysql:query(Conn, <<"COMMIT">>) of
+                        ok   -> ok;
+                        Err2 -> {error, {commit_failed, Err2}}
+                    end;
                 {error, _} = Err ->
                     mysql:query(Conn, <<"ROLLBACK">>),
                     Err

@@ -131,6 +131,39 @@ exec_sql_wraps_in_transaction_test() ->
         ?assert(meck:called(epgsql, squery, [?CONN, "COMMIT"]))
     after teardown() end.
 
+exec_sql_commit_failure_propagates_test() ->
+    meck:new(epgsql, [no_link, non_strict]),
+    meck:expect(epgsql, squery, fun(_, SQL) ->
+        SQLBin = iolist_to_binary(SQL),
+        case SQLBin of
+            <<"BEGIN">>    -> {ok, [], []};
+            <<"COMMIT">>   -> {error, <<"simulated commit failure">>};
+            <<"ROLLBACK">> -> {ok, [], []};
+            _              -> {ok, [], []}
+        end
+    end),
+    try
+        %% A failed COMMIT must surface as an error, not a fake ok.
+        ?assertMatch({error, {commit_failed, _}},
+                     erlang_migrate_pg:exec_sql(?CONN, <<"CREATE TABLE t (id int)">>))
+    after teardown() end.
+
+set_version_commit_failure_propagates_test() ->
+    meck:new(epgsql, [no_link, non_strict]),
+    meck:expect(epgsql, squery, fun(_, SQL) ->
+        SQLBin = iolist_to_binary(SQL),
+        case SQLBin of
+            <<"BEGIN">>    -> {ok, [], []};
+            <<"COMMIT">>   -> {error, <<"simulated commit failure">>};
+            <<"ROLLBACK">> -> {ok, [], []};
+            _              -> {ok, 1}
+        end
+    end),
+    try
+        ?assertMatch({error, {commit_failed, _}},
+                     erlang_migrate_pg:set_version(?CONN, ?TABLE, 5, false))
+    after teardown() end.
+
 %%% ── validate_table_name (schema.table support) ──────────────────────────────
 
 validate_table_name_simple_test() ->

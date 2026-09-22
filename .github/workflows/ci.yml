@@ -1,0 +1,87 @@
+# Minimal CI: compile + unit tests (incl. always-on SQLite real-DB suite)
+# on an OTP matrix, plus one integration job with PostgreSQL + MySQL
+# service containers.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: OTP ${{matrix.otp}}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        otp: ['27', '29']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{matrix.otp}}
+          rebar3-version: '3.24'
+      - run: rebar3 compile
+      - run: rebar3 as test eunit
+      # esqlite3 is a NIF: keep real-DB tests in a fresh VM after meck tests.
+      - run: rebar3 as test eunit --module=erlang_migrate_sqlite_integration_it
+        env:
+          EM_SQLITE_IT: '1'
+
+  dialyzer:
+    name: Dialyzer (OTP 29)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '29'
+          rebar3-version: '3.24'
+      - run: rebar3 as dev dialyzer
+
+  integration:
+    name: integration (PG + MySQL)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: em
+          POSTGRES_PASSWORD: em
+          POSTGRES_DB: em_bootstrap
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U em"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: em
+          MYSQL_DATABASE: em_it
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -pem"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '29'
+          rebar3-version: '3.24'
+      - run: rebar3 compile
+      - name: eunit with real databases
+        env:
+          EM_PG_HOST: localhost
+          EM_PG_PORT: '5432'
+          EM_PG_USER: em
+          EM_PG_PASSWORD: em
+          EM_PG_DB: em_bootstrap
+          EM_MYSQL_HOST: '127.0.0.1'
+          EM_MYSQL_PORT: '3306'
+          EM_MYSQL_USER: root
+          EM_MYSQL_PASSWORD: em
+          EM_MYSQL_DB: em_it
+        run: rebar3 as test eunit
