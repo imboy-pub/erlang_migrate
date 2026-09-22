@@ -37,8 +37,8 @@
 %% Requires a driver exporting applied_versions/2 (pg/mysql/sqlite all do).
 %%
 %% The first strict run on an existing install (history empty, current version
-%% set) backfills the history by ASSUMING every file version =< current was
-%% applied. If some of those files were never actually executed, they get
+%% set) backfills the history by ASSUMING every file version at or below
+%% current was applied. If some of those files were never actually executed, they get
 %% marked applied forever. Set `strict_bootstrap => fail' to refuse that
 %% guess: up/1,2 then returns `{error, {strict_bootstrap_needed, Current}}'
 %% and recovery is an explicit force/2 (rebuild history) or a deliberate
