@@ -21,7 +21,7 @@ jobs:
       - uses: erlef/setup-beam@v1
         with:
           otp-version: ${{matrix.otp}}
-          rebar3-version: '3.24'
+          rebar3-version: '3.27'
       - run: rebar3 compile
       - run: rebar3 as test eunit
       # esqlite3 is a NIF: keep real-DB tests in a fresh VM after meck tests.
@@ -37,7 +37,7 @@ jobs:
       - uses: erlef/setup-beam@v1
         with:
           otp-version: '29'
-          rebar3-version: '3.24'
+          rebar3-version: '3.27'
       - run: rebar3 as dev dialyzer
 
   integration:
@@ -70,7 +70,7 @@ jobs:
       - uses: erlef/setup-beam@v1
         with:
           otp-version: '29'
-          rebar3-version: '3.24'
+          rebar3-version: '3.27'
       - run: rebar3 compile
       - name: eunit with real databases
         env:
