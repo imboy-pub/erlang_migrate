@@ -1,4 +1,5 @@
-%% @doc erlang_migrate — database migration library modeled after golang-migrate/v4.
+%% erlang_migrate — database migration library modeled after golang-migrate/v4.
+%% (summary in -moduledoc below; this block keeps the extended edoc-era notes)
 %%
 %% == Quick Start ==
 %% ```
@@ -44,6 +45,7 @@
 %% and recovery is an explicit force/2 (rebuild history) or a deliberate
 %% `strict_bootstrap => backfill' run.
 -module(erlang_migrate).
+-moduledoc "数据库迁移库统一入口 / Database migration library facade — up/down/goto/version/force/drop/create，编排排他锁、驱动与迁移文件 source，对标 golang-migrate/v4。".
 -export([up/1, up/2, down/1, down/2, goto/2, version/1, force/2, drop/1,
          create/2]).
 

@@ -91,7 +91,7 @@ utf8_title_test() ->
     write_file(Dir, Name, "SELECT 1"),
     {ok, [M]} = erlang_migrate_source:scan(Dir),
     20240101120000 = maps:get(version, M),
-    <<"用户表"/utf8>> = maps:get(title, M),
+    ~B'用户表' = maps:get(title, M),
     clean_dir(Dir).
 
 %%% Helpers

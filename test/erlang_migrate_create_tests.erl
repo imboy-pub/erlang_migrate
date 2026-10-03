@@ -29,7 +29,7 @@ create_utf8_title_test() ->
     {ok, Up, _} = erlang_migrate:create(Dir, "用户表"),
     true = filelib:is_regular(Up),
     {ok, [M]} = erlang_migrate_source:scan(Dir),
-    <<"用户表"/utf8>> = maps:get(title, M),
+    ~B'用户表' = maps:get(title, M),
     clean_dir(Dir).
 
 create_rejects_bad_title_test() ->

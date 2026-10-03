@@ -1,11 +1,11 @@
-%% @doc SQLite 3+ driver for erlang_migrate.
-%% Uses esqlite (https://github.com/mmzeeman/esqlite).
+%% SQLite 3+ driver for erlang_migrate.
 %%
 %% Locking: SQLite has no advisory locks. We use OTP global:set_lock/3
 %% to serialize migrations across processes on the same node.
 %% Note: cross-VM (independent Erlang nodes) mutual exclusion is not provided;
 %% SQLite's own file-level locking handles low-level write serialization only.
 -module(erlang_migrate_sqlite).
+-moduledoc "SQLite 3+ 驱动 / SQLite driver（esqlite）：global:set_lock 提供同节点互斥，无跨 VM 互斥。".
 -behaviour(erlang_migrate_driver).
 -export([ensure_table/2, current_version/2, lock/2, lock/3, unlock/2,
          set_version/4, is_dirty/2, exec_sql/2, drop_table/2,

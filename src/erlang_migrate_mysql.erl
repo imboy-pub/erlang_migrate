@@ -1,6 +1,6 @@
-%% @doc MySQL 8+ driver for erlang_migrate.
-%% Uses mysql-otp (https://github.com/mysql-otp/mysql-otp).
+%% MySQL 8+ driver for erlang_migrate.
 -module(erlang_migrate_mysql).
+-moduledoc "MySQL 8+ 驱动 / MySQL driver（mysql-otp）：管理 schema_migrations 表、GET_LOCK 互斥与多语句执行。".
 -behaviour(erlang_migrate_driver).
 -export([ensure_table/2, current_version/2, lock/2, lock/3, unlock/2,
          set_version/4, is_dirty/2, exec_sql/2, drop_table/2,

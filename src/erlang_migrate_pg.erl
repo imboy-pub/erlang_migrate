@@ -1,6 +1,6 @@
-%% @doc PostgreSQL driver for erlang_migrate.
-%% Manages schema_migrations table and advisory locks.
+%% PostgreSQL driver for erlang_migrate.
 -module(erlang_migrate_pg).
+-moduledoc "PostgreSQL 驱动 / PostgreSQL driver（epgsql）：管理 schema_migrations 表与 advisory locks。".
 -behaviour(erlang_migrate_driver).
 -export([ensure_table/2, current_version/2, lock/2, lock/3, unlock/2,
          set_version/4, is_dirty/2, drop_table/2,

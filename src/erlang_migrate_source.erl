@@ -1,7 +1,8 @@
-%% @doc Migration file source — scans directory for *.up.sql / *.down.sql pairs.
+%% Migration file source — scans directory for *.up.sql / *.down.sql pairs.
 %% File naming convention: {version}_{title}.up.sql
 %% version must be a positive integer (e.g. 1, 2, 100, 20240101120000)
 -module(erlang_migrate_source).
+-moduledoc "迁移文件 source / Migration file source — 扫描 {version}_{title}.up.sql/.down.sql 对，按版本升序返回（标题支持 UTF-8）。".
 -export([scan/1, read_sql/2]).
 
 -type migration() :: #{version := integer(), title := binary(),

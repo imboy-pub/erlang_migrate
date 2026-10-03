@@ -1,6 +1,6 @@
-%% @doc Behaviour definition for erlang_migrate database drivers.
-%% Implement all callbacks to add support for a new database.
+%% Behaviour definition for erlang_migrate database drivers.
 -module(erlang_migrate_driver).
+-moduledoc "驱动 behaviour 契约 / Driver contract — 各数据库驱动实现同一组回调（ensure_table/lock/set_version 等）。".
 
 %% Create or verify the schema_migrations tracking table.
 -callback ensure_table(Conn :: term(), Table :: binary()) ->

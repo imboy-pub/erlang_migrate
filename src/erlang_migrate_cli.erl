@@ -1,10 +1,11 @@
-%% @doc Minimal CLI for erlang_migrate. Build with: rebar3 escriptize
+%% Minimal CLI for erlang_migrate. Build with: rebar3 escriptize
 %% Output: _build/default/bin/erlang_migrate_cli
 %%
 %% Only `new' (file generation) is provided — applying migrations stays
 %% in-app via erlang_migrate:up/1, preserving the zero-dependency design
 %% (a full CLI would have to bundle every database driver).
 -module(erlang_migrate_cli).
+-moduledoc "escript CLI 入口 / escript CLI entry — 仅 `new' 子命令生成迁移文件对（`rebar3 escriptize' 构建）。".
 -export([main/1]).
 
 -define(DEFAULT_DIR, "priv/migrations").
